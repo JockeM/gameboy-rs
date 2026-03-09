@@ -128,6 +128,7 @@ fn cb_prefix_dispatches_prefixed_opcode() {
     rom.extend_from_slice(&[0xCB, 0x11]);
     let mut gameboy = Gameboy::load(&rom);
     gameboy.write_u8(Register8::C, 0x80);
+    gameboy.write_flag(Flag::Carry, false);
 
     gameboy.execute();
 

@@ -951,7 +951,10 @@ fn executes_phase_4_8_bit_inc_dec_and_accumulator_control() {
         Case {
             name: "27 DAA after addition",
             program: &[0x27],
-            setup: |gameboy| gameboy.write_u8(Register8::A, 0x3C),
+            setup: |gameboy| {
+                gameboy.write_u8(Register8::A, 0x3C);
+                gameboy.write_flag(Flag::Carry, false);
+            },
             expected: Expected {
                 pc: Some(0x101),
                 a: Some(0x42),
@@ -981,6 +984,7 @@ fn executes_phase_4_8_bit_inc_dec_and_accumulator_control() {
                 gameboy.write_u8(Register8::A, 0x0F);
                 gameboy.write_flag(Flag::Subtraction, true);
                 gameboy.write_flag(Flag::HalfCarry, true);
+                gameboy.write_flag(Flag::Carry, false);
             },
             expected: Expected {
                 pc: Some(0x101),
@@ -998,6 +1002,7 @@ fn executes_phase_4_8_bit_inc_dec_and_accumulator_control() {
             setup: |gameboy| {
                 gameboy.write_u8(Register8::A, 0x9A);
                 gameboy.write_flag(Flag::Subtraction, true);
+                gameboy.write_flag(Flag::HalfCarry, false);
                 gameboy.write_flag(Flag::Carry, true);
             },
             expected: Expected {
@@ -2092,6 +2097,7 @@ fn executes_phase_9_cb_rotate_shift_and_swap_instructions() {
             setup: |gameboy| {
                 gameboy.write_u16(Register16::HL, 0xC902);
                 gameboy.write_u8_addr(0xC902, 0x00);
+                gameboy.write_flag(Flag::Carry, false);
             },
             expected: Expected {
                 pc: Some(0x102),
@@ -2126,6 +2132,7 @@ fn executes_phase_9_cb_rotate_shift_and_swap_instructions() {
             setup: |gameboy| {
                 gameboy.write_u16(Register16::HL, 0xC903);
                 gameboy.write_u8_addr(0xC903, 0x00);
+                gameboy.write_flag(Flag::Carry, false);
             },
             expected: Expected {
                 pc: Some(0x102),

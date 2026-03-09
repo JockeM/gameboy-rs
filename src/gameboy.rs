@@ -9,6 +9,43 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+const CYCLES_PER_FRAME: u64 = 70_224;
+
+fn initialize_io_registers(mem: &mut [u8; 0x10000]) {
+    mem[0xFF00] = 0xCF;
+    mem[0xFF05] = 0x00;
+    mem[0xFF06] = 0x00;
+    mem[0xFF07] = 0x00;
+    mem[0xFF10] = 0x80;
+    mem[0xFF11] = 0xBF;
+    mem[0xFF12] = 0xF3;
+    mem[0xFF14] = 0xBF;
+    mem[0xFF16] = 0x3F;
+    mem[0xFF17] = 0x00;
+    mem[0xFF19] = 0xBF;
+    mem[0xFF1A] = 0x7F;
+    mem[0xFF1B] = 0xFF;
+    mem[0xFF1C] = 0x9F;
+    mem[0xFF1E] = 0xBF;
+    mem[0xFF20] = 0xFF;
+    mem[0xFF21] = 0x00;
+    mem[0xFF22] = 0x00;
+    mem[0xFF23] = 0xBF;
+    mem[0xFF24] = 0x77;
+    mem[0xFF25] = 0xF3;
+    mem[0xFF26] = 0xF1;
+    mem[0xFF40] = 0x91;
+    mem[0xFF42] = 0x00;
+    mem[0xFF43] = 0x00;
+    mem[0xFF45] = 0x00;
+    mem[0xFF47] = 0xFC;
+    mem[0xFF48] = 0xFF;
+    mem[0xFF49] = 0xFF;
+    mem[0xFF4A] = 0x00;
+    mem[0xFF4B] = 0x00;
+    mem[0xFFFF] = 0x00;
+}
+
 pub struct Gameboy {
     pub af: u16,
     pub bc: u16,
@@ -20,9 +57,12 @@ pub struct Gameboy {
     pub mem: [u8; 0x10000],
     pub ppu: Ppu,
     pub cycles: u64,
+    pub frames: u64,
     pub halted: bool,
     pub stopped: bool,
     pub interrupts_enabled: bool,
+    joypad_buttons: u8,
+    joypad_directions: u8,
 }
 
 impl Gameboy {
@@ -34,20 +74,24 @@ impl Gameboy {
     pub fn load(rom_bytes: &[u8]) -> Self {
         let mut mem = [0; 0x10000];
         mem[..rom_bytes.len()].copy_from_slice(rom_bytes);
+        initialize_io_registers(&mut mem);
 
         Self {
-            af: 0,
-            bc: 0,
-            de: 0,
-            hl: 0,
-            sp: 0,
+            af: 0x01B0,
+            bc: 0x0013,
+            de: 0x00D8,
+            hl: 0x014D,
+            sp: 0xFFFE,
             pc: 0x100,
             mem,
             ppu: Ppu::new(),
             cycles: 0,
+            frames: 0,
             halted: false,
             stopped: false,
             interrupts_enabled: false,
+            joypad_buttons: 0x0F,
+            joypad_directions: 0x0F,
         }
     }
 
@@ -63,11 +107,31 @@ impl Gameboy {
         )?;
 
         while window.is_open() && !window.is_key_down(Key::Escape) {
-            self.ppu.render_checkerboard();
+            self.update_joypad(&window);
+            self.run_frame();
             window.update_with_buffer(&self.ppu.framebuffer, SCREEN_WIDTH, SCREEN_HEIGHT)?;
         }
 
         Ok(())
+    }
+
+    pub fn run_frame(&mut self) {
+        let target_cycles = self.cycles + CYCLES_PER_FRAME;
+
+        while self.cycles < target_cycles && !self.stopped {
+            if self.halted {
+                self.cycles += 4;
+            } else {
+                self.execute();
+                self.cycles += 4;
+            }
+        }
+
+        self.mem[0xFF44] = 144;
+        self.mem[0xFF0F] |= 0x01;
+        self.ppu.render_background(&self.mem);
+        self.mem[0xFF44] = 0;
+        self.frames += 1;
     }
 
     pub fn execute(&mut self) {
@@ -547,11 +611,27 @@ impl Gameboy {
 
 impl Gameboy {
     pub fn read_u8_addr(&self, address: u16) -> u8 {
-        self.mem[address as usize]
+        match address {
+            0xFF00 => self.read_joypad(),
+            _ => self.mem[address as usize],
+        }
     }
 
     pub fn write_u8_addr(&mut self, address: u16, value: u8) {
-        self.mem[address as usize] = value;
+        match address {
+            0xE000..=0xFDFF => {
+                self.mem[address as usize] = value;
+                self.mem[usize::from(address - 0x2000)] = value;
+            }
+            0xFEA0..=0xFEFF => {}
+            0xFF00 => {
+                self.mem[0xFF00] = (self.mem[0xFF00] & 0xCF) | (value & 0x30);
+            }
+            0xFF04 | 0xFF44 => {
+                self.mem[address as usize] = 0;
+            }
+            _ => self.mem[address as usize] = value,
+        }
     }
 
     pub fn read_u16_addr(&self, address: u16) -> u16 {
@@ -651,6 +731,50 @@ impl Gameboy {
         let n = self.read_u16_addr(self.pc);
         self.pc = self.pc.wrapping_add(2);
         n
+    }
+
+    fn update_joypad(&mut self, window: &Window) {
+        self.joypad_directions = 0x0F;
+        self.joypad_buttons = 0x0F;
+
+        if window.is_key_down(Key::Right) {
+            self.joypad_directions &= !0x01;
+        }
+        if window.is_key_down(Key::Left) {
+            self.joypad_directions &= !0x02;
+        }
+        if window.is_key_down(Key::Up) {
+            self.joypad_directions &= !0x04;
+        }
+        if window.is_key_down(Key::Down) {
+            self.joypad_directions &= !0x08;
+        }
+        if window.is_key_down(Key::Z) {
+            self.joypad_buttons &= !0x01;
+        }
+        if window.is_key_down(Key::X) {
+            self.joypad_buttons &= !0x02;
+        }
+        if window.is_key_down(Key::Backspace) {
+            self.joypad_buttons &= !0x04;
+        }
+        if window.is_key_down(Key::Enter) {
+            self.joypad_buttons &= !0x08;
+        }
+    }
+
+    fn read_joypad(&self) -> u8 {
+        let select = self.mem[0xFF00] & 0x30;
+        let mut low = 0x0F;
+
+        if select & 0x10 == 0 {
+            low &= self.joypad_buttons;
+        }
+        if select & 0x20 == 0 {
+            low &= self.joypad_directions;
+        }
+
+        0xC0 | select | low
     }
 
     fn read_r8_operand(&self, operand: u8) -> u8 {
