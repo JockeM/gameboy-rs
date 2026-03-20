@@ -6,10 +6,19 @@ use crate::registers::*;
 use minifb::{Key, Scale, Window, WindowOptions};
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 
 const CYCLES_PER_FRAME: u64 = 70_224;
+const CYCLES_PER_SCANLINE: u64 = 456;
+const INTERRUPT_ENABLE_ADDR: usize = 0xFFFF;
+const INTERRUPT_FLAG_ADDR: usize = 0xFF0F;
+const KEY1_ADDR: usize = 0xFF4D;
+const DIV_ADDR: usize = 0xFF04;
+const TIMA_ADDR: usize = 0xFF05;
+const TMA_ADDR: usize = 0xFF06;
+const TAC_ADDR: usize = 0xFF07;
+const VBLANK_SCANLINE: u8 = 144;
 
 fn initialize_io_registers(mem: &mut [u8; 0x10000]) {
     mem[0xFF00] = 0xCF;
@@ -61,6 +70,10 @@ pub struct Gameboy {
     pub halted: bool,
     pub stopped: bool,
     pub interrupts_enabled: bool,
+    pub serial_output: Vec<u8>,
+    scanline: u8,
+    timer_counter: u16,
+    tima_reload_delay: u8,
     joypad_buttons: u8,
     joypad_directions: u8,
 }
@@ -90,6 +103,10 @@ impl Gameboy {
             halted: false,
             stopped: false,
             interrupts_enabled: false,
+            serial_output: Vec::new(),
+            scanline: 0,
+            timer_counter: 0,
+            tima_reload_delay: 0,
             joypad_buttons: 0x0F,
             joypad_directions: 0x0F,
         }
@@ -119,18 +136,22 @@ impl Gameboy {
         let target_cycles = self.cycles + CYCLES_PER_FRAME;
 
         while self.cycles < target_cycles && !self.stopped {
-            if self.halted {
+            let previous_cycles = self.cycles;
+
+            if self.service_interrupt() {
+            } else if self.halted {
                 self.cycles += 4;
             } else {
                 self.execute();
                 self.cycles += 4;
             }
+
+            let elapsed_cycles = self.cycles - previous_cycles;
+            self.advance_timer(elapsed_cycles);
+            self.advance_ppu(elapsed_cycles);
         }
 
-        self.mem[0xFF44] = 144;
-        self.mem[0xFF0F] |= 0x01;
         self.ppu.render_background(&self.mem);
-        self.mem[0xFF44] = 0;
         self.frames += 1;
     }
 
@@ -142,10 +163,12 @@ impl Gameboy {
             0x01 => {
                 let nn = self.next_u16();
                 self.write_u16(Register16::BC, nn);
+                self.cycles += 8;
             }
             0x02 => {
                 let bc = self.read_u16(Register16::BC);
                 self.write_u8_addr(bc, self.read_u8(Register8::A));
+                self.cycles += 4;
             }
             0x03 => {
                 let bc = self.read_u16(Register16::BC);
@@ -160,6 +183,7 @@ impl Gameboy {
             0x06 => {
                 let n = self.next_u8();
                 self.write_u8(Register8::B, n);
+                self.cycles += 4;
             }
             0x07 => {
                 self.rlca();
@@ -167,14 +191,17 @@ impl Gameboy {
             0x08 => {
                 let address = self.next_u16();
                 self.write_u16_addr(address, self.sp);
+                self.cycles += 16;
             }
             0x09 => {
                 self.add_hl(self.read_u16(Register16::BC));
+                self.cycles += 4;
             }
             0x0A => {
                 let bc = self.read_u16(Register16::BC);
                 let value = self.read_u8_addr(bc);
                 self.write_u8(Register8::A, value);
+                self.cycles += 4;
             }
             0x0B => {
                 let bc = self.read_u16(Register16::BC);
@@ -189,21 +216,29 @@ impl Gameboy {
             0x0E => {
                 let n = self.next_u8();
                 self.write_u8(Register8::C, n);
+                self.cycles += 4;
             }
             0x0F => {
                 self.rrca();
             }
             0x10 => {
                 self.next_u8();
-                self.stopped = true;
+                if self.mem[KEY1_ADDR] & 0x01 != 0 {
+                    self.mem[KEY1_ADDR] ^= 0x80;
+                    self.mem[KEY1_ADDR] &= 0x80;
+                } else {
+                    self.stopped = true;
+                }
             }
             0x11 => {
                 let nn = self.next_u16();
                 self.write_u16(Register16::DE, nn);
+                self.cycles += 8;
             }
             0x12 => {
                 let de = self.read_u16(Register16::DE);
                 self.write_u8_addr(de, self.read_u8(Register8::A));
+                self.cycles += 4;
             }
             0x13 => {
                 let de = self.read_u16(Register16::DE);
@@ -218,6 +253,7 @@ impl Gameboy {
             0x16 => {
                 let n = self.next_u8();
                 self.write_u8(Register8::D, n);
+                self.cycles += 4;
             }
             0x17 => {
                 self.rla();
@@ -228,11 +264,13 @@ impl Gameboy {
             }
             0x19 => {
                 self.add_hl(self.read_u16(Register16::DE));
+                self.cycles += 4;
             }
             0x1A => {
                 let de = self.read_u16(Register16::DE);
                 let value = self.read_u8_addr(de);
                 self.write_u8(Register8::A, value);
+                self.cycles += 4;
             }
             0x1B => {
                 let de = self.read_u16(Register16::DE);
@@ -247,6 +285,7 @@ impl Gameboy {
             0x1E => {
                 let n = self.next_u8();
                 self.write_u8(Register8::E, n);
+                self.cycles += 4;
             }
             0x1F => {
                 self.rra();
@@ -258,11 +297,13 @@ impl Gameboy {
             0x21 => {
                 let nn = self.next_u16();
                 self.write_u16(Register16::HL, nn);
+                self.cycles += 8;
             }
             0x22 => {
                 let hl = self.read_u16(Register16::HL);
                 self.write_u8_addr(hl, self.read_u8(Register8::A));
                 self.write_u16(Register16::HL, hl.wrapping_add(1));
+                self.cycles += 4;
             }
             0x23 => {
                 let hl = self.read_u16(Register16::HL);
@@ -277,6 +318,7 @@ impl Gameboy {
             0x26 => {
                 let n = self.next_u8();
                 self.write_u8(Register8::H, n);
+                self.cycles += 4;
             }
             0x27 => {
                 self.daa();
@@ -287,12 +329,14 @@ impl Gameboy {
             }
             0x29 => {
                 self.add_hl(self.read_u16(Register16::HL));
+                self.cycles += 4;
             }
             0x2A => {
                 let hl = self.read_u16(Register16::HL);
                 let value = self.read_u8_addr(hl);
                 self.write_u8(Register8::A, value);
                 self.write_u16(Register16::HL, hl.wrapping_add(1));
+                self.cycles += 4;
             }
             0x2B => {
                 let hl = self.read_u16(Register16::HL);
@@ -307,6 +351,7 @@ impl Gameboy {
             0x2E => {
                 let n = self.next_u8();
                 self.write_u8(Register8::L, n);
+                self.cycles += 4;
             }
             0x2F => {
                 self.cpl();
@@ -317,24 +362,29 @@ impl Gameboy {
             }
             0x31 => {
                 self.sp = self.next_u16();
+                self.cycles += 8;
             }
             0x32 => {
                 let hl = self.read_u16(Register16::HL);
                 self.write_u8_addr(hl, self.read_u8(Register8::A));
                 self.write_u16(Register16::HL, hl.wrapping_sub(1));
+                self.cycles += 4;
             }
             0x33 => {
                 self.sp = self.sp.wrapping_add(1);
             }
             0x34 => {
                 self.inc_r8_operand(6);
+                self.cycles += 8;
             }
             0x35 => {
                 self.dec_r8_operand(6);
+                self.cycles += 8;
             }
             0x36 => {
                 let n = self.next_u8();
                 self.write_u8_addr(self.read_u16(Register16::HL), n);
+                self.cycles += 8;
             }
             0x37 => {
                 self.scf();
@@ -345,12 +395,14 @@ impl Gameboy {
             }
             0x39 => {
                 self.add_hl(self.sp);
+                self.cycles += 4;
             }
             0x3A => {
                 let hl = self.read_u16(Register16::HL);
                 let value = self.read_u8_addr(hl);
                 self.write_u8(Register8::A, value);
                 self.write_u16(Register16::HL, hl.wrapping_sub(1));
+                self.cycles += 4;
             }
             0x3B => {
                 self.sp = self.sp.wrapping_sub(1);
@@ -364,6 +416,7 @@ impl Gameboy {
             0x3E => {
                 let n = self.next_u8();
                 self.write_u8(Register8::A, n);
+                self.cycles += 4;
             }
             0x3F => {
                 self.ccf();
@@ -373,6 +426,9 @@ impl Gameboy {
                 let source = opcode & 0b111;
                 let value = self.read_r8_operand(source);
                 self.write_r8_operand(destination, value);
+                if source == 6 || destination == 6 {
+                    self.cycles += 4;
+                }
             }
             0x76 => {
                 self.halted = true;
@@ -419,6 +475,7 @@ impl Gameboy {
             0xC1 => {
                 let value = self.pop_u16();
                 self.write_u16(Register16::BC, value);
+                self.cycles += 8;
             }
             0xC2 => {
                 let nn = self.next_u16();
@@ -434,10 +491,12 @@ impl Gameboy {
             }
             0xC5 => {
                 self.push_u16(self.read_u16(Register16::BC));
+                self.cycles += 12;
             }
             0xC6 => {
                 let value = self.next_u8();
                 self.alu_add_a(value);
+                self.cycles += 4;
             }
             0xC7 => {
                 self.rst(0x00);
@@ -451,6 +510,7 @@ impl Gameboy {
             0xCE => {
                 let value = self.next_u8();
                 self.alu_adc_a(value);
+                self.cycles += 4;
             }
             0xCA => {
                 let nn = self.next_u16();
@@ -473,6 +533,7 @@ impl Gameboy {
             0xD1 => {
                 let value = self.pop_u16();
                 self.write_u16(Register16::DE, value);
+                self.cycles += 8;
             }
             0xD4 => {
                 let nn = self.next_u16();
@@ -480,10 +541,12 @@ impl Gameboy {
             }
             0xD5 => {
                 self.push_u16(self.read_u16(Register16::DE));
+                self.cycles += 12;
             }
             0xD6 => {
                 let value = self.next_u8();
                 self.alu_sub_a(value);
+                self.cycles += 4;
             }
             0xD7 => {
                 self.rst(0x10);
@@ -506,6 +569,7 @@ impl Gameboy {
             0xDE => {
                 let value = self.next_u8();
                 self.alu_sbc_a(value);
+                self.cycles += 4;
             }
             0xDF => {
                 self.rst(0x18);
@@ -517,21 +581,26 @@ impl Gameboy {
             0xE0 => {
                 let address = 0xFF00 + u16::from(self.next_u8());
                 self.write_u8_addr(address, self.read_u8(Register8::A));
+                self.cycles += 8;
             }
             0xE1 => {
                 let value = self.pop_u16();
                 self.write_u16(Register16::HL, value);
+                self.cycles += 8;
             }
             0xE2 => {
                 let address = 0xFF00 + u16::from(self.read_u8(Register8::C));
                 self.write_u8_addr(address, self.read_u8(Register8::A));
+                self.cycles += 4;
             }
             0xE5 => {
                 self.push_u16(self.read_u16(Register16::HL));
+                self.cycles += 12;
             }
             0xE6 => {
                 let value = self.next_u8();
                 self.alu_and_a(value);
+                self.cycles += 4;
             }
             0xE7 => {
                 self.rst(0x20);
@@ -539,13 +608,15 @@ impl Gameboy {
             0xE8 => {
                 let offset = self.next_u8();
                 self.sp = self.add_sp_e8(offset);
+                self.cycles += 12;
             }
             0xE9 => {
-                self.jump(self.read_u16(Register16::HL));
+                self.pc = self.read_u16(Register16::HL);
             }
             0xEA => {
                 let address = self.next_u16();
                 self.write_u8_addr(address, self.read_u8(Register8::A));
+                self.cycles += 12;
             }
             0xEF => {
                 self.rst(0x28);
@@ -553,30 +624,36 @@ impl Gameboy {
             0xEE => {
                 let value = self.next_u8();
                 self.alu_xor_a(value);
+                self.cycles += 4;
             }
             0xF0 => {
                 let address = 0xFF00 + u16::from(self.next_u8());
                 let value = self.read_u8_addr(address);
                 self.write_u8(Register8::A, value);
+                self.cycles += 8;
             }
             0xF1 => {
                 let value = self.pop_u16();
                 self.write_u16(Register16::AF, value);
+                self.cycles += 8;
             }
             0xF2 => {
                 let address = 0xFF00 + u16::from(self.read_u8(Register8::C));
                 let value = self.read_u8_addr(address);
                 self.write_u8(Register8::A, value);
+                self.cycles += 4;
             }
             0xF3 => {
                 self.interrupts_enabled = false;
             }
             0xF5 => {
                 self.push_u16(self.read_u16(Register16::AF));
+                self.cycles += 12;
             }
             0xF6 => {
                 let value = self.next_u8();
                 self.alu_or_a(value);
+                self.cycles += 4;
             }
             0xF7 => {
                 self.rst(0x30);
@@ -585,14 +662,17 @@ impl Gameboy {
                 let offset = self.next_u8();
                 let result = self.add_sp_e8(offset);
                 self.write_u16(Register16::HL, result);
+                self.cycles += 8;
             }
             0xF9 => {
                 self.sp = self.read_u16(Register16::HL);
+                self.cycles += 4;
             }
             0xFA => {
                 let address = self.next_u16();
                 let value = self.read_u8_addr(address);
                 self.write_u8(Register8::A, value);
+                self.cycles += 12;
             }
             0xFB => {
                 self.interrupts_enabled = true;
@@ -600,6 +680,7 @@ impl Gameboy {
             0xFE => {
                 let value = self.next_u8();
                 self.alu_cp_a(value);
+                self.cycles += 4;
             }
             0xFF => {
                 self.rst(0x38);
@@ -619,6 +700,10 @@ impl Gameboy {
 
     pub fn write_u8_addr(&mut self, address: u16, value: u8) {
         match address {
+            0xC000..=0xDDFF => {
+                self.mem[address as usize] = value;
+                self.mem[usize::from(address + 0x2000)] = value;
+            }
             0xE000..=0xFDFF => {
                 self.mem[address as usize] = value;
                 self.mem[usize::from(address - 0x2000)] = value;
@@ -627,8 +712,34 @@ impl Gameboy {
             0xFF00 => {
                 self.mem[0xFF00] = (self.mem[0xFF00] & 0xCF) | (value & 0x30);
             }
-            0xFF04 | 0xFF44 => {
+            0xFF01 => {
+                self.mem[0xFF01] = value;
+            }
+            0xFF02 => {
+                self.mem[0xFF02] = value;
+                if value == 0x81 {
+                    self.emit_serial_byte(self.mem[0xFF01]);
+                    self.mem[0xFF02] = 0x01;
+                }
+            }
+            0xFF04 => {
+                self.reset_divider();
+            }
+            0xFF05 => {
+                self.tima_reload_delay = 0;
+                self.mem[TIMA_ADDR] = value;
+            }
+            0xFF06 => {
+                self.mem[TMA_ADDR] = value;
+            }
+            0xFF44 => {
                 self.mem[address as usize] = 0;
+            }
+            0xFF07 => {
+                self.write_tac(value);
+            }
+            0xFF4D => {
+                self.mem[KEY1_ADDR] = (self.mem[KEY1_ADDR] & 0x80) | (value & 0x01);
             }
             _ => self.mem[address as usize] = value,
         }
@@ -672,24 +783,28 @@ impl Gameboy {
 
     fn jump(&mut self, nn: u16) {
         self.pc = nn;
-        self.cycles += 4;
+        self.cycles += 12;
     }
 
     fn jump_if(&mut self, condition: bool, nn: u16) {
         if condition {
             self.jump(nn);
+        } else {
+            self.cycles += 8;
         }
     }
 
     fn call(&mut self, nn: u16) {
         self.push_u16(self.pc);
         self.pc = nn;
-        self.cycles += 12;
+        self.cycles += 20;
     }
 
     fn call_if(&mut self, condition: bool, nn: u16) {
         if condition {
             self.call(nn);
+        } else {
+            self.cycles += 8;
         }
     }
 
@@ -700,7 +815,10 @@ impl Gameboy {
 
     fn ret_if(&mut self, condition: bool) {
         if condition {
+            self.cycles += 4;
             self.ret();
+        } else {
+            self.cycles += 4;
         }
     }
 
@@ -712,12 +830,14 @@ impl Gameboy {
 
     fn jump_relative(&mut self, offset: u8) {
         self.pc = Self::add_signed_e8(self.pc, offset);
-        self.cycles += 4;
+        self.cycles += 8;
     }
 
     fn jump_relative_if(&mut self, condition: bool, offset: u8) {
         if condition {
             self.jump_relative(offset);
+        } else {
+            self.cycles += 4;
         }
     }
 
@@ -775,6 +895,135 @@ impl Gameboy {
         }
 
         0xC0 | select | low
+    }
+
+    fn pending_interrupts(&self) -> u8 {
+        self.mem[INTERRUPT_ENABLE_ADDR] & self.mem[INTERRUPT_FLAG_ADDR] & 0x1F
+    }
+
+    fn emit_serial_byte(&mut self, value: u8) {
+        self.serial_output.push(value);
+        let _ = io::stdout().write_all(&[value]);
+        let _ = io::stdout().flush();
+    }
+
+    fn advance_timer(&mut self, elapsed_cycles: u64) {
+        for _ in 0..elapsed_cycles {
+            self.advance_tima_reload();
+
+            let old_signal = self.timer_signal();
+            self.timer_counter = self.timer_counter.wrapping_add(1);
+            self.mem[DIV_ADDR] = (self.timer_counter >> 8) as u8;
+            self.tick_tima_on_falling_edge(old_signal);
+        }
+    }
+
+    fn reset_divider(&mut self) {
+        let old_signal = self.timer_signal();
+
+        self.timer_counter = 0;
+        self.mem[DIV_ADDR] = 0;
+        self.tick_tima_on_falling_edge(old_signal);
+    }
+
+    fn write_tac(&mut self, value: u8) {
+        let old_signal = self.timer_signal();
+
+        self.mem[TAC_ADDR] = value & 0x07;
+        self.tick_tima_on_falling_edge(old_signal);
+    }
+
+    fn timer_signal(&self) -> bool {
+        self.mem[TAC_ADDR] & 0x04 != 0 && self.timer_counter & self.tima_counter_bit() != 0
+    }
+
+    fn tima_counter_bit(&self) -> u16 {
+        match self.mem[TAC_ADDR] & 0x03 {
+            0x00 => 1 << 9,
+            0x01 => 1 << 3,
+            0x02 => 1 << 5,
+            0x03 => 1 << 7,
+            _ => unreachable!("TAC frequency is masked to two bits"),
+        }
+    }
+
+    fn tick_tima_on_falling_edge(&mut self, old_signal: bool) {
+        if old_signal && !self.timer_signal() {
+            self.increment_tima();
+        }
+    }
+
+    fn increment_tima(&mut self) {
+        let (value, overflowed) = self.mem[TIMA_ADDR].overflowing_add(1);
+
+        if overflowed {
+            self.mem[TIMA_ADDR] = 0;
+            self.tima_reload_delay = 4;
+        } else {
+            self.mem[TIMA_ADDR] = value;
+        }
+    }
+
+    fn advance_tima_reload(&mut self) {
+        if self.tima_reload_delay == 0 {
+            return;
+        }
+
+        self.tima_reload_delay -= 1;
+
+        if self.tima_reload_delay == 0 {
+            self.mem[TIMA_ADDR] = self.mem[TMA_ADDR];
+            self.mem[INTERRUPT_FLAG_ADDR] |= 0x04;
+        }
+    }
+
+    fn advance_ppu(&mut self, elapsed_cycles: u64) {
+        if elapsed_cycles == 0 {
+            return;
+        }
+
+        let previous_scanline = self.scanline;
+        let frame_cycles = self.cycles % CYCLES_PER_FRAME;
+        let scanline = (frame_cycles / CYCLES_PER_SCANLINE) as u8;
+
+        self.scanline = scanline;
+        self.mem[0xFF44] = scanline;
+
+        if previous_scanline < VBLANK_SCANLINE && scanline >= VBLANK_SCANLINE {
+            self.mem[INTERRUPT_FLAG_ADDR] |= 0x01;
+        }
+    }
+
+    fn service_interrupt(&mut self) -> bool {
+        let pending = self.pending_interrupts();
+
+        if pending == 0 {
+            return false;
+        }
+
+        self.halted = false;
+
+        if !self.interrupts_enabled {
+            return false;
+        }
+
+        let interrupt = pending.trailing_zeros() as u8;
+        let vector = match interrupt {
+            0 => 0x40,
+            1 => 0x48,
+            2 => 0x50,
+            3 => 0x58,
+            4 => 0x60,
+            _ => unreachable!("pending interrupts are masked to five bits"),
+        };
+
+        self.interrupts_enabled = false;
+        self.mem[INTERRUPT_FLAG_ADDR] &= !(1 << interrupt);
+        self.push_u16(self.pc);
+        self.pc = vector;
+        self.cycles += 20;
+
+        true
     }
 
     fn read_r8_operand(&self, operand: u8) -> u8 {
@@ -1032,5 +1281,97 @@ impl Gameboy {
         self.write_flag(Flag::Carry, (sp & 0x00FF) + u16::from(offset) > 0x00FF);
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advance_ppu_sets_ly_and_requests_vblank() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.scanline = VBLANK_SCANLINE - 1;
+        gameboy.mem[0xFF44] = VBLANK_SCANLINE - 1;
+        gameboy.cycles = u64::from(VBLANK_SCANLINE) * CYCLES_PER_SCANLINE;
+
+        gameboy.advance_ppu(CYCLES_PER_SCANLINE);
+
+        assert_eq!(gameboy.mem[0xFF44], VBLANK_SCANLINE);
+        assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x01, 0x01);
+    }
+
+    #[test]
+    fn advance_ppu_wraps_ly_at_frame_boundary() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.scanline = 153;
+        gameboy.mem[0xFF44] = 153;
+        gameboy.cycles = CYCLES_PER_FRAME;
+
+        gameboy.advance_ppu(4);
+
+        assert_eq!(gameboy.mem[0xFF44], 0);
+    }
+
+    #[test]
+    fn advance_timer_updates_div_from_elapsed_cycles() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+
+        gameboy.advance_timer(255);
+        assert_eq!(gameboy.mem[DIV_ADDR], 0);
+
+        gameboy.advance_timer(1);
+        assert_eq!(gameboy.mem[DIV_ADDR], 1);
+    }
+
+    #[test]
+    fn advance_timer_increments_tima_at_tac_frequency() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.write_u8_addr(TAC_ADDR as u16, 0x05);
+
+        gameboy.advance_timer(15);
+        assert_eq!(gameboy.mem[TIMA_ADDR], 0);
+
+        gameboy.advance_timer(1);
+        assert_eq!(gameboy.mem[TIMA_ADDR], 1);
+    }
+
+    #[test]
+    fn advance_timer_reload_tima_and_requests_timer_interrupt_on_overflow() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.mem[TIMA_ADDR] = 0xFF;
+        gameboy.mem[TMA_ADDR] = 0x42;
+        gameboy.write_u8_addr(TAC_ADDR as u16, 0x05);
+
+        gameboy.advance_timer(16);
+        assert_eq!(gameboy.mem[TIMA_ADDR], 0x00);
+        assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x04, 0x00);
+
+        gameboy.advance_timer(4);
+
+        assert_eq!(gameboy.mem[TIMA_ADDR], 0x42);
+        assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x04, 0x04);
+    }
+
+    #[test]
+    fn disabled_timer_does_not_increment_tima() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.write_u8_addr(TAC_ADDR as u16, 0x01);
+
+        gameboy.advance_timer(64);
+
+        assert_eq!(gameboy.mem[TIMA_ADDR], 0);
+    }
+
+    #[test]
+    fn resetting_divider_can_increment_tima_on_falling_edge() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.write_u8_addr(TAC_ADDR as u16, 0x05);
+        gameboy.advance_timer(8);
+
+        gameboy.write_u8_addr(DIV_ADDR as u16, 0x00);
+
+        assert_eq!(gameboy.mem[DIV_ADDR], 0);
+        assert_eq!(gameboy.mem[TIMA_ADDR], 1);
     }
 }

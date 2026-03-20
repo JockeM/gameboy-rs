@@ -8,7 +8,13 @@ fn reads_and_writes_memory_words_little_endian_with_wrapping() {
     gameboy.write_u16_addr(0xC000, 0x1234);
     assert_eq!(gameboy.read_u8_addr(0xC000), 0x34);
     assert_eq!(gameboy.read_u8_addr(0xC001), 0x12);
+    assert_eq!(gameboy.read_u8_addr(0xE000), 0x34);
+    assert_eq!(gameboy.read_u8_addr(0xE001), 0x12);
     assert_eq!(gameboy.read_u16_addr(0xC000), 0x1234);
+
+    gameboy.write_u16_addr(0xE000, 0xBEEF);
+    assert_eq!(gameboy.read_u8_addr(0xC000), 0xEF);
+    assert_eq!(gameboy.read_u8_addr(0xC001), 0xBE);
 
     gameboy.write_u16_addr(0xFFFF, 0xABCD);
     assert_eq!(gameboy.read_u8_addr(0xFFFF), 0xCD);
@@ -136,4 +142,37 @@ fn cb_prefix_dispatches_prefixed_opcode() {
     assert_eq!(gameboy.read_u8(Register8::C), 0x00);
     assert!(gameboy.read_flag(Flag::Zero));
     assert!(gameboy.read_flag(Flag::Carry));
+}
+
+#[test]
+fn run_frame_services_pending_vblank_interrupt() {
+    let mut gameboy = Gameboy::load(&[]);
+    gameboy.mem[0x0040] = 0x10;
+    gameboy.mem[0x0041] = 0x00;
+    gameboy.pc = 0x1234;
+    gameboy.sp = 0xD000;
+    gameboy.halted = true;
+    gameboy.interrupts_enabled = true;
+    gameboy.mem[0xFFFF] = 0x01;
+    gameboy.mem[0xFF0F] = 0x01;
+
+    gameboy.run_frame();
+
+    assert_eq!(gameboy.pc, 0x0042);
+    assert_eq!(gameboy.sp, 0xCFFE);
+    assert_eq!(gameboy.mem[0xCFFE], 0x34);
+    assert_eq!(gameboy.mem[0xCFFF], 0x12);
+    assert!(gameboy.stopped);
+    assert!(!gameboy.interrupts_enabled);
+}
+
+#[test]
+fn serial_transfer_collects_output() {
+    let mut gameboy = Gameboy::load(&[]);
+
+    gameboy.write_u8_addr(0xFF01, b'A');
+    gameboy.write_u8_addr(0xFF02, 0x81);
+
+    assert_eq!(gameboy.serial_output, b"A");
+    assert_eq!(gameboy.read_u8_addr(0xFF02), 0x01);
 }

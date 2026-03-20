@@ -1975,6 +1975,17 @@ fn executes_phase_8_control_and_interrupt_instructions() {
     assert_eq!(gameboy.pc, 0x102);
 
     let mut rom = vec![0; 0x100];
+    rom.extend_from_slice(&[0x10, 0x00]);
+    let mut gameboy = Gameboy::load(&rom);
+    gameboy.write_u8_addr(0xFF4D, 0x01);
+
+    gameboy.execute();
+
+    assert!(!gameboy.stopped);
+    assert_eq!(gameboy.pc, 0x102);
+    assert_eq!(gameboy.mem[0xFF4D], 0x80);
+
+    let mut rom = vec![0; 0x100];
     rom.push(0x76);
     let mut gameboy = Gameboy::load(&rom);
 
