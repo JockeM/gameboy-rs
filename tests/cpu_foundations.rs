@@ -176,3 +176,19 @@ fn serial_transfer_collects_output() {
     assert_eq!(gameboy.serial_output, b"A");
     assert_eq!(gameboy.read_u8_addr(0xFF02), 0x01);
 }
+
+#[test]
+fn dma_transfer_copies_a_page_into_oam() {
+    let mut gameboy = Gameboy::load(&[]);
+
+    for offset in 0..0xA0u16 {
+        gameboy.write_u8_addr(0xC000 + offset, offset as u8);
+    }
+
+    gameboy.write_u8_addr(0xFF46, 0xC0);
+
+    assert_eq!(gameboy.read_u8_addr(0xFF46), 0xC0);
+    assert_eq!(gameboy.read_u8_addr(0xFE00), 0x00);
+    assert_eq!(gameboy.read_u8_addr(0xFE4F), 0x4F);
+    assert_eq!(gameboy.read_u8_addr(0xFE9F), 0x9F);
+}

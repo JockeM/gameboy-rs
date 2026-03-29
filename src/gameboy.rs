@@ -8,9 +8,11 @@ use minifb::{Key, Scale, Window, WindowOptions};
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
+const CPU_CLOCK_HZ: u64 = 4_194_304;
 const CYCLES_PER_FRAME: u64 = 70_224;
-const CYCLES_PER_SCANLINE: u64 = 456;
+const NANOS_PER_FRAME: u64 = CYCLES_PER_FRAME * 1_000_000_000 / CPU_CLOCK_HZ;
 const INTERRUPT_ENABLE_ADDR: usize = 0xFFFF;
 const INTERRUPT_FLAG_ADDR: usize = 0xFF0F;
 const KEY1_ADDR: usize = 0xFF4D;
@@ -18,7 +20,6 @@ const DIV_ADDR: usize = 0xFF04;
 const TIMA_ADDR: usize = 0xFF05;
 const TMA_ADDR: usize = 0xFF06;
 const TAC_ADDR: usize = 0xFF07;
-const VBLANK_SCANLINE: u8 = 144;
 
 fn initialize_io_registers(mem: &mut [u8; 0x10000]) {
     mem[0xFF00] = 0xCF;
@@ -55,6 +56,216 @@ fn initialize_io_registers(mem: &mut [u8; 0x10000]) {
     mem[0xFFFF] = 0x00;
 }
 
+struct Cartridge {
+    rom: Vec<u8>,
+    ram: Vec<u8>,
+    mapper: Mapper,
+    rom_bank_count: usize,
+    ram_bank_count: usize,
+}
+
+enum Mapper {
+    NoMbc,
+    Mbc1 {
+        ram_enabled: bool,
+        rom_bank_low5: u8,
+        bank_high2: u8,
+        banking_mode: u8,
+    },
+}
+
+impl Cartridge {
+    fn new(rom_bytes: &[u8]) -> Self {
+        let rom = rom_bytes.to_vec();
+        let rom_bank_count = (rom.len().max(0x4000) + 0x3FFF) / 0x4000;
+        let ram_size = rom_bytes
+            .get(0x149)
+            .copied()
+            .map(cartridge_ram_size)
+            .unwrap_or(0);
+        let ram_bank_count = if ram_size == 0 { 0 } else { (ram_size + 0x1FFF) / 0x2000 };
+        let mapper = match rom_bytes.get(0x147).copied().unwrap_or(0x00) {
+            0x00 => Mapper::NoMbc,
+            0x01..=0x03 => Mapper::Mbc1 {
+                ram_enabled: false,
+                rom_bank_low5: 1,
+                bank_high2: 0,
+                banking_mode: 0,
+            },
+            cartridge_type => panic!("Unsupported cartridge type: {cartridge_type:#04X}"),
+        };
+
+        Self {
+            rom,
+            ram: vec![0; ram_size],
+            mapper,
+            rom_bank_count,
+            ram_bank_count,
+        }
+    }
+
+    fn read_rom(&self, address: u16) -> u8 {
+        let address = usize::from(address);
+        let bank = if address < 0x4000 {
+            self.lower_rom_bank()
+        } else {
+            self.upper_rom_bank()
+        };
+        let offset = bank * 0x4000 + (address & 0x3FFF);
+
+        self.rom.get(offset).copied().unwrap_or(0xFF)
+    }
+
+    fn write_rom(&mut self, address: u16, value: u8) {
+        match &mut self.mapper {
+            Mapper::NoMbc => {}
+            Mapper::Mbc1 {
+                ram_enabled,
+                rom_bank_low5,
+                bank_high2,
+                banking_mode,
+            } => match address {
+                0x0000..=0x1FFF => *ram_enabled = value & 0x0F == 0x0A,
+                0x2000..=0x3FFF => {
+                    let bank = value & 0x1F;
+                    *rom_bank_low5 = if bank == 0 { 1 } else { bank };
+                }
+                0x4000..=0x5FFF => *bank_high2 = value & 0x03,
+                0x6000..=0x7FFF => *banking_mode = value & 0x01,
+                _ => unreachable!("invalid ROM write address {address:#06X}"),
+            },
+        }
+    }
+
+    fn read_ram(&self, address: u16) -> u8 {
+        self.ram_index(address)
+            .and_then(|index| self.ram.get(index).copied())
+            .unwrap_or(0xFF)
+    }
+
+    fn write_ram(&mut self, address: u16, value: u8) {
+        if let Some(index) = self.ram_index(address) {
+            self.ram[index] = value;
+        }
+    }
+
+    fn is_present(&self) -> bool {
+        !self.rom.is_empty()
+    }
+
+    fn sync_visible_memory(&self, mem: &mut [u8; 0x10000]) {
+        self.copy_rom_bank_into(mem, 0x0000, self.lower_rom_bank());
+        self.copy_rom_bank_into(mem, 0x4000, self.upper_rom_bank());
+        self.sync_external_ram(mem);
+    }
+
+    fn copy_rom_bank_into(&self, mem: &mut [u8; 0x10000], start: usize, bank: usize) {
+        let window = &mut mem[start..start + 0x4000];
+        window.fill(0xFF);
+
+        let offset = bank * 0x4000;
+        let available = self.rom.len().saturating_sub(offset).min(0x4000);
+        if available > 0 {
+            window[..available].copy_from_slice(&self.rom[offset..offset + available]);
+        }
+    }
+
+    fn sync_external_ram(&self, mem: &mut [u8; 0x10000]) {
+        let window = &mut mem[0xA000..0xC000];
+        window.fill(0xFF);
+
+        if self.ram.is_empty() {
+            return;
+        }
+
+        let bank = self.current_ram_bank();
+        let offset = bank * 0x2000;
+        let available = self.ram.len().saturating_sub(offset).min(0x2000);
+        if available > 0 {
+            window[..available].copy_from_slice(&self.ram[offset..offset + available]);
+        }
+    }
+
+    fn lower_rom_bank(&self) -> usize {
+        match self.mapper {
+            Mapper::NoMbc => 0,
+            Mapper::Mbc1 {
+                bank_high2,
+                banking_mode,
+                ..
+            } if banking_mode != 0 => (usize::from(bank_high2) << 5) % self.rom_bank_count,
+            Mapper::Mbc1 { .. } => 0,
+        }
+    }
+
+    fn upper_rom_bank(&self) -> usize {
+        match self.mapper {
+            Mapper::NoMbc => {
+                if self.rom_bank_count > 1 {
+                    1
+                } else {
+                    0
+                }
+            }
+            Mapper::Mbc1 {
+                rom_bank_low5,
+                bank_high2,
+                ..
+            } => {
+                let bank = ((usize::from(bank_high2) << 5) | usize::from(rom_bank_low5))
+                    % self.rom_bank_count;
+                if bank == 0 && self.rom_bank_count > 1 {
+                    1
+                } else {
+                    bank
+                }
+            }
+        }
+    }
+
+    fn current_ram_bank(&self) -> usize {
+        if self.ram_bank_count == 0 {
+            return 0;
+        }
+
+        match self.mapper {
+            Mapper::Mbc1 {
+                bank_high2,
+                banking_mode,
+                ..
+            } if banking_mode != 0 => usize::from(bank_high2) % self.ram_bank_count,
+            _ => 0,
+        }
+    }
+
+    fn ram_index(&self, address: u16) -> Option<usize> {
+        if self.ram.is_empty() || !(0xA000..=0xBFFF).contains(&address) {
+            return None;
+        }
+
+        match self.mapper {
+            Mapper::Mbc1 { ram_enabled, .. } if !ram_enabled => None,
+            _ => {
+                let offset = usize::from(address - 0xA000);
+                let index = self.current_ram_bank() * 0x2000 + offset;
+                (index < self.ram.len()).then_some(index)
+            }
+        }
+    }
+}
+
+fn cartridge_ram_size(code: u8) -> usize {
+    match code {
+        0x00 => 0,
+        0x01 => 0x0800,
+        0x02 => 0x2000,
+        0x03 => 0x8000,
+        0x04 => 0x20000,
+        0x05 => 0x10000,
+        _ => 0,
+    }
+}
+
 pub struct Gameboy {
     pub af: u16,
     pub bc: u16,
@@ -64,6 +275,7 @@ pub struct Gameboy {
     pub pc: u16,
 
     pub mem: [u8; 0x10000],
+    cartridge: Cartridge,
     pub ppu: Ppu,
     pub cycles: u64,
     pub frames: u64,
@@ -71,7 +283,6 @@ pub struct Gameboy {
     pub stopped: bool,
     pub interrupts_enabled: bool,
     pub serial_output: Vec<u8>,
-    scanline: u8,
     timer_counter: u16,
     tima_reload_delay: u8,
     joypad_buttons: u8,
@@ -86,8 +297,14 @@ impl Gameboy {
 
     pub fn load(rom_bytes: &[u8]) -> Self {
         let mut mem = [0; 0x10000];
-        mem[..rom_bytes.len()].copy_from_slice(rom_bytes);
         initialize_io_registers(&mut mem);
+        let cartridge = Cartridge::new(rom_bytes);
+        if cartridge.is_present() {
+            cartridge.sync_visible_memory(&mut mem);
+        }
+
+        let mut ppu = Ppu::new();
+        ppu.sync_registers(&mut mem);
 
         Self {
             af: 0x01B0,
@@ -97,14 +314,14 @@ impl Gameboy {
             sp: 0xFFFE,
             pc: 0x100,
             mem,
-            ppu: Ppu::new(),
+            cartridge,
+            ppu,
             cycles: 0,
             frames: 0,
             halted: false,
             stopped: false,
             interrupts_enabled: false,
             serial_output: Vec::new(),
-            scanline: 0,
             timer_counter: 0,
             tima_reload_delay: 0,
             joypad_buttons: 0x0F,
@@ -122,6 +339,7 @@ impl Gameboy {
                 ..WindowOptions::default()
             },
         )?;
+        window.limit_update_rate(Some(Duration::from_nanos(NANOS_PER_FRAME)));
 
         while window.is_open() && !window.is_key_down(Key::Escape) {
             self.update_joypad(&window);
@@ -150,8 +368,6 @@ impl Gameboy {
             self.advance_timer(elapsed_cycles);
             self.advance_ppu(elapsed_cycles);
         }
-
-        self.ppu.render_background(&self.mem);
         self.frames += 1;
     }
 
@@ -693,6 +909,8 @@ impl Gameboy {
 impl Gameboy {
     pub fn read_u8_addr(&self, address: u16) -> u8 {
         match address {
+            0x0000..=0x7FFF if self.cartridge.is_present() => self.cartridge.read_rom(address),
+            0xA000..=0xBFFF if self.cartridge.is_present() => self.cartridge.read_ram(address),
             0xFF00 => self.read_joypad(),
             _ => self.mem[address as usize],
         }
@@ -700,6 +918,14 @@ impl Gameboy {
 
     pub fn write_u8_addr(&mut self, address: u16, value: u8) {
         match address {
+            0x0000..=0x7FFF if self.cartridge.is_present() => {
+                self.cartridge.write_rom(address, value);
+                self.cartridge.sync_visible_memory(&mut self.mem);
+            }
+            0xA000..=0xBFFF if self.cartridge.is_present() => {
+                self.cartridge.write_ram(address, value);
+                self.cartridge.sync_external_ram(&mut self.mem);
+            }
             0xC000..=0xDDFF => {
                 self.mem[address as usize] = value;
                 self.mem[usize::from(address + 0x2000)] = value;
@@ -710,7 +936,7 @@ impl Gameboy {
             }
             0xFEA0..=0xFEFF => {}
             0xFF00 => {
-                self.mem[0xFF00] = (self.mem[0xFF00] & 0xCF) | (value & 0x30);
+                self.write_joypad_select(value);
             }
             0xFF01 => {
                 self.mem[0xFF01] = value;
@@ -732,11 +958,20 @@ impl Gameboy {
             0xFF06 => {
                 self.mem[TMA_ADDR] = value;
             }
+            0xFF40 => {
+                self.ppu.write_lcdc(&mut self.mem, value);
+            }
+            0xFF41 => {
+                self.ppu.write_stat(&mut self.mem, value);
+            }
             0xFF44 => {
-                self.mem[address as usize] = 0;
+                self.ppu.reset_ly(&mut self.mem);
             }
             0xFF07 => {
                 self.write_tac(value);
+            }
+            0xFF46 => {
+                self.perform_oam_dma(value);
             }
             0xFF4D => {
                 self.mem[KEY1_ADDR] = (self.mem[KEY1_ADDR] & 0x80) | (value & 0x01);
@@ -854,47 +1089,82 @@ impl Gameboy {
     }
 
     fn update_joypad(&mut self, window: &Window) {
-        self.joypad_directions = 0x0F;
-        self.joypad_buttons = 0x0F;
+        let mut directions = 0x0F;
+        let mut buttons = 0x0F;
 
-        if window.is_key_down(Key::Right) {
-            self.joypad_directions &= !0x01;
+        if window.is_key_down(Key::Right) || window.is_key_down(Key::D) {
+            directions &= !0x01;
         }
-        if window.is_key_down(Key::Left) {
-            self.joypad_directions &= !0x02;
+        if window.is_key_down(Key::Left) || window.is_key_down(Key::A) {
+            directions &= !0x02;
         }
-        if window.is_key_down(Key::Up) {
-            self.joypad_directions &= !0x04;
+        if window.is_key_down(Key::Up) || window.is_key_down(Key::W) {
+            directions &= !0x04;
         }
-        if window.is_key_down(Key::Down) {
-            self.joypad_directions &= !0x08;
+        if window.is_key_down(Key::Down) || window.is_key_down(Key::S) {
+            directions &= !0x08;
         }
-        if window.is_key_down(Key::Z) {
-            self.joypad_buttons &= !0x01;
+        if window.is_key_down(Key::Z) || window.is_key_down(Key::J) {
+            buttons &= !0x01;
         }
-        if window.is_key_down(Key::X) {
-            self.joypad_buttons &= !0x02;
+        if window.is_key_down(Key::X) || window.is_key_down(Key::K) {
+            buttons &= !0x02;
         }
-        if window.is_key_down(Key::Backspace) {
-            self.joypad_buttons &= !0x04;
+        if window.is_key_down(Key::Backspace) || window.is_key_down(Key::RightShift) {
+            buttons &= !0x04;
         }
-        if window.is_key_down(Key::Enter) {
-            self.joypad_buttons &= !0x08;
+        if window.is_key_down(Key::Enter) || window.is_key_down(Key::Space) {
+            buttons &= !0x08;
         }
+
+        self.set_joypad_state(buttons, directions);
     }
 
     fn read_joypad(&self) -> u8 {
         let select = self.mem[0xFF00] & 0x30;
+        self.joypad_output(select)
+    }
+
+    fn joypad_output(&self, select: u8) -> u8 {
         let mut low = 0x0F;
 
-        if select & 0x10 == 0 {
+        if select & 0x20 == 0 {
             low &= self.joypad_buttons;
         }
-        if select & 0x20 == 0 {
+        if select & 0x10 == 0 {
             low &= self.joypad_directions;
         }
 
         0xC0 | select | low
+    }
+
+    fn set_joypad_state(&mut self, buttons: u8, directions: u8) {
+        let previous = self.read_joypad();
+        self.joypad_buttons = buttons;
+        self.joypad_directions = directions;
+        self.request_joypad_interrupt(previous, self.read_joypad());
+    }
+
+    fn write_joypad_select(&mut self, value: u8) {
+        let previous = self.read_joypad();
+        self.mem[0xFF00] = (self.mem[0xFF00] & 0xCF) | (value & 0x30);
+        self.request_joypad_interrupt(previous, self.read_joypad());
+    }
+
+    fn request_joypad_interrupt(&mut self, previous: u8, current: u8) {
+        if (previous & !current) & 0x0F != 0 {
+            self.mem[INTERRUPT_FLAG_ADDR] |= 0x10;
+        }
+    }
+
+    fn perform_oam_dma(&mut self, value: u8) {
+        self.mem[0xFF46] = value;
+
+        let source_base = u16::from(value) << 8;
+        for offset in 0..0xA0u16 {
+            let byte = self.read_u8_addr(source_base.wrapping_add(offset));
+            self.mem[usize::from(0xFE00 + offset)] = byte;
+        }
     }
 
     fn pending_interrupts(&self) -> u8 {
@@ -978,20 +1248,7 @@ impl Gameboy {
     }
 
     fn advance_ppu(&mut self, elapsed_cycles: u64) {
-        if elapsed_cycles == 0 {
-            return;
-        }
-
-        let previous_scanline = self.scanline;
-        let frame_cycles = self.cycles % CYCLES_PER_FRAME;
-        let scanline = (frame_cycles / CYCLES_PER_SCANLINE) as u8;
-
-        self.scanline = scanline;
-        self.mem[0xFF44] = scanline;
-
-        if previous_scanline < VBLANK_SCANLINE && scanline >= VBLANK_SCANLINE {
-            self.mem[INTERRUPT_FLAG_ADDR] |= 0x01;
-        }
+        self.ppu.step(&mut self.mem, elapsed_cycles);
     }
 
     fn service_interrupt(&mut self) -> bool {
@@ -1291,26 +1548,23 @@ mod tests {
     #[test]
     fn advance_ppu_sets_ly_and_requests_vblank() {
         let mut gameboy = Gameboy::load(&[0; 0x150]);
-        gameboy.scanline = VBLANK_SCANLINE - 1;
-        gameboy.mem[0xFF44] = VBLANK_SCANLINE - 1;
-        gameboy.cycles = u64::from(VBLANK_SCANLINE) * CYCLES_PER_SCANLINE;
+        gameboy.advance_ppu(
+            u64::from(crate::ppu::VISIBLE_SCANLINES) * u64::from(crate::ppu::CYCLES_PER_SCANLINE),
+        );
 
-        gameboy.advance_ppu(CYCLES_PER_SCANLINE);
-
-        assert_eq!(gameboy.mem[0xFF44], VBLANK_SCANLINE);
+        assert_eq!(gameboy.mem[0xFF44], crate::ppu::VISIBLE_SCANLINES);
         assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x01, 0x01);
     }
 
     #[test]
     fn advance_ppu_wraps_ly_at_frame_boundary() {
         let mut gameboy = Gameboy::load(&[0; 0x150]);
-        gameboy.scanline = 153;
-        gameboy.mem[0xFF44] = 153;
-        gameboy.cycles = CYCLES_PER_FRAME;
-
-        gameboy.advance_ppu(4);
+        gameboy.advance_ppu(
+            u64::from(crate::ppu::TOTAL_SCANLINES) * u64::from(crate::ppu::CYCLES_PER_SCANLINE),
+        );
 
         assert_eq!(gameboy.mem[0xFF44], 0);
+        assert_eq!(gameboy.mem[0xFF41] & 0x03, 0x02);
     }
 
     #[test]
@@ -1373,5 +1627,43 @@ mod tests {
 
         assert_eq!(gameboy.mem[DIV_ADDR], 0);
         assert_eq!(gameboy.mem[TIMA_ADDR], 1);
+    }
+
+    #[test]
+    fn read_joypad_uses_selected_button_group() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.joypad_buttons = 0b1110;
+        gameboy.joypad_directions = 0b1101;
+
+        gameboy.write_u8_addr(0xFF00, 0x20);
+        assert_eq!(gameboy.read_u8_addr(0xFF00) & 0x0F, 0b1101);
+
+        gameboy.write_u8_addr(0xFF00, 0x10);
+        assert_eq!(gameboy.read_u8_addr(0xFF00) & 0x0F, 0b1110);
+
+        gameboy.write_u8_addr(0xFF00, 0x00);
+        assert_eq!(gameboy.read_u8_addr(0xFF00) & 0x0F, 0b1100);
+    }
+
+    #[test]
+    fn pressed_joypad_button_requests_interrupt() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.write_u8_addr(0xFF00, 0x10);
+
+        gameboy.set_joypad_state(0b1110, 0x0F);
+
+        assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x10, 0x10);
+    }
+
+    #[test]
+    fn selecting_pressed_joypad_group_requests_interrupt() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.joypad_buttons = 0b1110;
+        gameboy.write_u8_addr(0xFF00, 0x30);
+        gameboy.mem[INTERRUPT_FLAG_ADDR] = 0;
+
+        gameboy.write_u8_addr(0xFF00, 0x10);
+
+        assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x10, 0x10);
     }
 }

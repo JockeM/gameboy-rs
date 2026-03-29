@@ -47,3 +47,21 @@ fn runs_a_frame_and_renders_rom_written_background_tiles() {
     assert_eq!(gameboy.mem[0x9800], 0x00);
     assert_eq!(gameboy.ppu.framebuffer[0], 0x00081820);
 }
+
+#[test]
+fn mbc1_switches_the_bank_mapped_at_0x4000() {
+    let mut rom = vec![0; 0x10000];
+    rom[0x147] = 0x01;
+    rom[0x148] = 0x01;
+    rom[0x4000] = 0x11;
+    rom[0x8000] = 0x22;
+
+    let mut gameboy = Gameboy::load(&rom);
+
+    assert_eq!(gameboy.read_u8_addr(0x4000), 0x11);
+
+    gameboy.write_u8_addr(0x2000, 0x02);
+
+    assert_eq!(gameboy.read_u8_addr(0x4000), 0x22);
+    assert_eq!(gameboy.mem[0x4000], 0x22);
+}
