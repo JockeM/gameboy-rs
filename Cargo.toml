@@ -7,3 +7,7 @@ edition = "2021"
 
 [dependencies]
 minifb = '*'
+
+[[bench]]
+name = "throughput"
+harness = false
