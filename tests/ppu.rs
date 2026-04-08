@@ -1,4 +1,4 @@
-use gameboy_rs::ppu::{CYCLES_PER_SCANLINE, Ppu, SCREEN_HEIGHT, SCREEN_WIDTH};
+use gameboy_rs::ppu::{Ppu, CYCLES_PER_SCANLINE, SCREEN_HEIGHT, SCREEN_WIDTH};
 
 #[test]
 fn initializes_a_full_screen_framebuffer() {

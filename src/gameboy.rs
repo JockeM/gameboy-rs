@@ -83,7 +83,11 @@ impl Cartridge {
             .copied()
             .map(cartridge_ram_size)
             .unwrap_or(0);
-        let ram_bank_count = if ram_size == 0 { 0 } else { (ram_size + 0x1FFF) / 0x2000 };
+        let ram_bank_count = if ram_size == 0 {
+            0
+        } else {
+            (ram_size + 0x1FFF) / 0x2000
+        };
         let mapper = match rom_bytes.get(0x147).copied().unwrap_or(0x00) {
             0x00 => Mapper::NoMbc,
             0x01..=0x03 => Mapper::Mbc1 {
