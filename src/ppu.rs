@@ -115,8 +115,18 @@ impl Ppu {
         }
 
         if !lcd_enabled(memory) {
-            self.disable_lcd(memory);
+            if self.mode != MODE_HBLANK || memory[LY_ADDR] != 0 {
+                self.disable_lcd(memory);
+            }
             return;
+        }
+
+        if elapsed_cycles <= u64::from(u16::MAX - self.scanline_cycles) {
+            let next_scanline_cycles = self.scanline_cycles + elapsed_cycles as u16;
+            if next_scanline_cycles < self.mode_cycles() {
+                self.scanline_cycles = next_scanline_cycles;
+                return;
+            }
         }
 
         let mut remaining_cycles = elapsed_cycles;
@@ -229,21 +239,29 @@ impl Ppu {
         let tile_y = usize::from(bg_y / 8);
         let row_in_tile = usize::from(bg_y % 8);
 
-        for x in 0..SCREEN_WIDTH {
+        let mut x = 0;
+        while x < SCREEN_WIDTH {
             let bg_x = scroll_x.wrapping_add(x as u8);
-            let tile_x = usize::from(bg_x / 8);
-            let col_in_tile = usize::from(bg_x % 8);
+            let tile_x = usize::from(bg_x >> 3);
+            let col_in_tile = usize::from(bg_x & 0x07);
             let tile_index_address = tile_map_base + tile_y * 32 + tile_x;
             let tile_index = memory[tile_index_address];
             let tile_address = tile_data_address(tile_index, unsigned_tile_data);
             let lo = memory[tile_address + row_in_tile * 2];
             let hi = memory[tile_address + row_in_tile * 2 + 1];
-            let bit = 7 - col_in_tile;
-            let color_index = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1);
-            let shade = (palette >> (color_index * 2)) & 0b11;
+            let pixels = (8 - col_in_tile).min(SCREEN_WIDTH - x);
 
-            background_color_indices[x] = color_index;
-            self.framebuffer[y * SCREEN_WIDTH + x] = COLORS[usize::from(shade)];
+            for pixel in 0..pixels {
+                let bit = 7 - (col_in_tile + pixel);
+                let color_index = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1);
+                let shade = palette_shade(palette, color_index);
+                let screen_x = x + pixel;
+
+                background_color_indices[screen_x] = color_index;
+                self.framebuffer[y * SCREEN_WIDTH + screen_x] = COLORS[usize::from(shade)];
+            }
+
+            x += pixels;
         }
     }
 
@@ -254,7 +272,8 @@ impl Ppu {
         background_color_indices: &[u8; SCREEN_WIDTH],
     ) {
         let sprite_height = sprite_height(memory[LCDC_ADDR]);
-        let mut visible_sprites = Vec::with_capacity(10);
+        let mut visible_sprites = [VisibleSprite::default(); 10];
+        let mut visible_sprite_count = 0usize;
 
         for sprite_index in 0..40usize {
             let oam_addr = OAM_START_ADDR + sprite_index * 4;
@@ -265,20 +284,22 @@ impl Ppu {
                 continue;
             }
 
-            visible_sprites.push(VisibleSprite {
+            visible_sprites[visible_sprite_count] = VisibleSprite {
                 x: memory[oam_addr + 1],
                 oam_index: sprite_index as u8,
                 screen_x: sprite_x,
                 screen_y: sprite_y,
                 tile_index: memory[oam_addr + 2],
                 attributes: memory[oam_addr + 3],
-            });
+            };
+            visible_sprite_count += 1;
 
-            if visible_sprites.len() == 10 {
+            if visible_sprite_count == visible_sprites.len() {
                 break;
             }
         }
 
+        let visible_sprites = &mut visible_sprites[..visible_sprite_count];
         visible_sprites.sort_by_key(|sprite| (sprite.x, sprite.oam_index));
 
         for sprite in visible_sprites.iter().rev() {
@@ -363,21 +384,29 @@ impl Ppu {
         let row_in_tile = window_line % 8;
         let start_x = window_x.max(0) as usize;
 
-        for x in start_x..SCREEN_WIDTH {
+        let mut x = start_x;
+        while x < SCREEN_WIDTH {
             let window_col = (x as i16 - window_x) as usize;
-            let tile_x = window_col / 8;
-            let col_in_tile = window_col % 8;
+            let tile_x = window_col >> 3;
+            let col_in_tile = window_col & 0x07;
             let tile_index_address = tile_map_base + tile_y * 32 + tile_x;
             let tile_index = memory[tile_index_address];
             let tile_address = tile_data_address(tile_index, unsigned_tile_data);
             let lo = memory[tile_address + row_in_tile * 2];
             let hi = memory[tile_address + row_in_tile * 2 + 1];
-            let bit = 7 - col_in_tile;
-            let color_index = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1);
-            let shade = palette_shade(palette, color_index);
+            let pixels = (8 - col_in_tile).min(SCREEN_WIDTH - x);
 
-            background_color_indices[x] = color_index;
-            self.framebuffer[y * SCREEN_WIDTH + x] = COLORS[usize::from(shade)];
+            for pixel in 0..pixels {
+                let bit = 7 - (col_in_tile + pixel);
+                let color_index = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1);
+                let shade = palette_shade(palette, color_index);
+                let screen_x = x + pixel;
+
+                background_color_indices[screen_x] = color_index;
+                self.framebuffer[y * SCREEN_WIDTH + screen_x] = COLORS[usize::from(shade)];
+            }
+
+            x += pixels;
         }
     }
 
@@ -441,7 +470,7 @@ impl Default for Ppu {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct VisibleSprite {
     x: u8,
     oam_index: u8,
@@ -452,7 +481,11 @@ struct VisibleSprite {
 }
 
 fn sprite_height(lcdc: u8) -> usize {
-    if lcdc & 0x04 != 0 { 16 } else { 8 }
+    if lcdc & 0x04 != 0 {
+        16
+    } else {
+        8
+    }
 }
 
 fn sprite_covers_scanline(sprite_y: i16, sprite_height: usize, scanline: usize) -> bool {
