@@ -1,17 +1,23 @@
 #![allow(dead_code)]
 
-use crate::ppu::{Ppu, SCREEN_HEIGHT, SCREEN_WIDTH};
+use crate::ppu::Ppu;
+#[cfg(feature = "window")]
+use crate::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use crate::registers::*;
 
+#[cfg(feature = "window")]
 use minifb::{Key, Scale, Window, WindowOptions};
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+#[cfg(feature = "window")]
 use std::time::Duration;
 
+#[cfg(feature = "window")]
 const CPU_CLOCK_HZ: u64 = 4_194_304;
 const CYCLES_PER_FRAME: u64 = 70_224;
+#[cfg(feature = "window")]
 const NANOS_PER_FRAME: u64 = CYCLES_PER_FRAME * 1_000_000_000 / CPU_CLOCK_HZ;
 const INTERRUPT_ENABLE_ADDR: usize = 0xFFFF;
 const INTERRUPT_FLAG_ADDR: usize = 0xFF0F;
@@ -300,6 +306,14 @@ impl Gameboy {
     }
 
     pub fn load(rom_bytes: &[u8]) -> Self {
+        Self::load_inner(rom_bytes, false)
+    }
+
+    pub fn load_headless(rom_bytes: &[u8]) -> Self {
+        Self::load_inner(rom_bytes, true)
+    }
+
+    fn load_inner(rom_bytes: &[u8], headless: bool) -> Self {
         let mut mem = [0; 0x10000];
         initialize_io_registers(&mut mem);
         let cartridge = Cartridge::new(rom_bytes);
@@ -307,7 +321,7 @@ impl Gameboy {
             cartridge.sync_visible_memory(&mut mem);
         }
 
-        let mut ppu = Ppu::new();
+        let mut ppu = if headless { Ppu::new_headless() } else { Ppu::new() };
         ppu.sync_registers(&mut mem);
 
         Self {
@@ -333,6 +347,7 @@ impl Gameboy {
         }
     }
 
+    #[cfg(feature = "window")]
     pub fn run(&mut self) -> Result<(), minifb::Error> {
         let mut window = Window::new(
             "gameboy-rs",
@@ -1092,6 +1107,7 @@ impl Gameboy {
         n
     }
 
+    #[cfg(feature = "window")]
     fn update_joypad(&mut self, window: &Window) {
         let mut directions = 0x0F;
         let mut buttons = 0x0F;
@@ -1142,7 +1158,7 @@ impl Gameboy {
         0xC0 | select | low
     }
 
-    fn set_joypad_state(&mut self, buttons: u8, directions: u8) {
+    pub fn set_joypad_state(&mut self, buttons: u8, directions: u8) {
         let previous = self.read_joypad();
         self.joypad_buttons = buttons;
         self.joypad_directions = directions;

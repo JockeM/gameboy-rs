@@ -42,6 +42,7 @@ pub struct Ppu {
     pub framebuffer: [u32; SCREEN_WIDTH * SCREEN_HEIGHT],
     scanline_cycles: u16,
     mode: u8,
+    pub headless: bool,
 }
 
 impl Ppu {
@@ -50,9 +51,19 @@ impl Ppu {
             framebuffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
             scanline_cycles: 0,
             mode: MODE_OAM_SCAN,
+            headless: false,
         };
         ppu.render_checkerboard();
         ppu
+    }
+
+    pub fn new_headless() -> Self {
+        Self {
+            framebuffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
+            scanline_cycles: 0,
+            mode: MODE_OAM_SCAN,
+            headless: true,
+        }
     }
 
     pub fn sync_registers(&mut self, memory: &mut [u8; 0x10000]) {
@@ -153,7 +164,7 @@ impl Ppu {
             MODE_OAM_SCAN => self.set_mode(memory, MODE_DRAWING),
             MODE_DRAWING => {
                 let scanline = memory[LY_ADDR];
-                if scanline < VISIBLE_SCANLINES {
+                if !self.headless && scanline < VISIBLE_SCANLINES {
                     self.render_scanline(memory, usize::from(scanline));
                 }
                 self.set_mode(memory, MODE_HBLANK);
