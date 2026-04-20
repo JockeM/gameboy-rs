@@ -1198,13 +1198,40 @@ impl Gameboy {
     }
 
     fn advance_timer(&mut self, elapsed_cycles: u64) {
-        for _ in 0..elapsed_cycles {
+        // Process any pending TIMA reload tick-by-tick (max 4 iterations).
+        // The reload must fire at the right cycle, so we can't batch it.
+        let reload_ticks = elapsed_cycles.min(self.tima_reload_delay as u64);
+        for _ in 0..reload_ticks {
             self.advance_tima_reload();
-
             let old_signal = self.timer_signal();
             self.timer_counter = self.timer_counter.wrapping_add(1);
             self.mem[DIV_ADDR] = (self.timer_counter >> 8) as u8;
             self.tick_tima_on_falling_edge(old_signal);
+        }
+
+        let remaining = elapsed_cycles - reload_ticks;
+        if remaining == 0 {
+            return;
+        }
+
+        // Batch the remaining cycles: advance counter in one step and count
+        // how many falling edges of the TIMA bit occurred in (old, old+remaining].
+        // advance_tima_reload is a no-op here (delay is now 0).
+        let timer_enabled = self.mem[TAC_ADDR] & 0x04 != 0;
+        let old_counter = self.timer_counter;
+        self.timer_counter = self.timer_counter.wrapping_add(remaining as u16);
+        self.mem[DIV_ADDR] = (self.timer_counter >> 8) as u8;
+
+        if timer_enabled {
+            // A falling edge on `bit` occurs at every multiple of `2 * bit`.
+            let bit = u64::from(self.tima_counter_bit());
+            let period = bit * 2;
+            let start = u64::from(old_counter);
+            let end = start + remaining;
+            let falling_edges = end / period - start / period;
+            for _ in 0..falling_edges {
+                self.increment_tima();
+            }
         }
     }
 
