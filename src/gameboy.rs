@@ -928,7 +928,6 @@ impl Gameboy {
 impl Gameboy {
     pub fn read_u8_addr(&self, address: u16) -> u8 {
         match address {
-            0x0000..=0x7FFF if self.cartridge.is_present() => self.cartridge.read_rom(address),
             0xA000..=0xBFFF if self.cartridge.is_present() => self.cartridge.read_ram(address),
             0xFF00 => self.read_joypad(),
             _ => self.mem[address as usize],
