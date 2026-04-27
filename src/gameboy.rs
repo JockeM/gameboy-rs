@@ -297,6 +297,7 @@ pub struct Gameboy {
     tima_reload_delay: u8,
     joypad_buttons: u8,
     joypad_directions: u8,
+    ppu_pending: u64,
 }
 
 impl Gameboy {
@@ -344,6 +345,7 @@ impl Gameboy {
             tima_reload_delay: 0,
             joypad_buttons: 0x0F,
             joypad_directions: 0x0F,
+            ppu_pending: 0,
         }
     }
 
@@ -385,8 +387,23 @@ impl Gameboy {
 
             let elapsed_cycles = self.cycles - previous_cycles;
             self.advance_timer(elapsed_cycles);
-            self.advance_ppu(elapsed_cycles);
+
+            // Accumulate PPU cycles and only step when we reach a mode boundary.
+            // Minimum mode duration is 80 cycles (OAM scan), so most instructions
+            // (~4 cycles each) are skipped entirely.
+            self.ppu_pending += elapsed_cycles;
+            if self.ppu_pending >= u64::from(self.ppu.cycles_until_mode_end()) {
+                self.ppu.step(&mut self.mem, self.ppu_pending);
+                self.ppu_pending = 0;
+            }
         }
+
+        // Flush any remaining accumulated PPU cycles.
+        if self.ppu_pending > 0 {
+            self.ppu.step(&mut self.mem, self.ppu_pending);
+            self.ppu_pending = 0;
+        }
+
         self.frames += 1;
     }
 

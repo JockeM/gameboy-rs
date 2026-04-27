@@ -5,8 +5,17 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["window"]
+window = ["dep:minifb"]
+
 [dependencies]
-minifb = '*'
+minifb = { version = "*", optional = true }
+
+[[bin]]
+name = "gameboy-rs"
+path = "src/main.rs"
+required-features = ["window"]
 
 [[bench]]
 name = "throughput"

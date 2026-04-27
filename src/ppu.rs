@@ -120,6 +120,10 @@ impl Ppu {
         }
     }
 
+    pub fn cycles_until_mode_end(&self) -> u16 {
+        self.mode_cycles() - self.scanline_cycles
+    }
+
     pub fn step(&mut self, memory: &mut [u8; 0x10000], elapsed_cycles: u64) {
         if elapsed_cycles == 0 {
             return;
