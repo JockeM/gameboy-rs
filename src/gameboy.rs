@@ -377,7 +377,9 @@ impl Gameboy {
         while self.cycles < target_cycles && !self.stopped {
             let previous_cycles = self.cycles;
 
-            if self.service_interrupt() {
+            // Skip the full interrupt path unless interrupts are enabled or
+            // the CPU is halted — avoids reading two memory locations every instruction.
+            if (self.interrupts_enabled || self.halted) && self.service_interrupt() {
             } else if self.halted {
                 self.cycles += 4;
             } else {
