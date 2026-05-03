@@ -1,3 +1,4 @@
+mod cartridge;
 pub mod gameboy;
 pub mod ppu;
 pub mod registers;
