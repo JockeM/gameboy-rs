@@ -64,7 +64,7 @@ fn main() {
     );
 
     for workload in workloads {
-    let mut gameboy = Gameboy::load_headless(&(workload.rom)());
+    let mut gameboy = Gameboy::load(&(workload.rom)());
 
         run_frames(&mut gameboy, config.warmup_frames);
         let measurement = measure_frames(&mut gameboy, config.frames);
@@ -147,7 +147,7 @@ fn run_rom_benchmark(config: &Config, rom_path: &PathBuf) {
         eprintln!("Failed to read ROM {}: {err}", rom_path.display());
         std::process::exit(1);
     });
-    let mut gameboy = Gameboy::load_headless(&rom);
+    let mut gameboy = Gameboy::load(&rom);
 
     run_frames(&mut gameboy, config.warmup_frames);
     let measurement = measure_frames(&mut gameboy, config.frames);

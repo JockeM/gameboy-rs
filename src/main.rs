@@ -1,6 +1,6 @@
 use std::env;
 
-use gameboy_rs::Gameboy;
+use gameboy_rs::{window, Gameboy};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -18,7 +18,7 @@ fn main() {
         }
     };
 
-    if let Err(err) = gameboy.run() {
+    if let Err(err) = window::run(&mut gameboy) {
         println!("Error running emulator: {}", err);
     }
 }

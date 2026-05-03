@@ -38,6 +38,7 @@ fn runs_a_frame_and_renders_rom_written_background_tiles() {
         0x76, // HALT
     ]);
     let mut gameboy = Gameboy::load(&rom);
+    gameboy.ppu.headless = false;
 
     gameboy.run_frame();
 

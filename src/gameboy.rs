@@ -83,14 +83,6 @@ impl Gameboy {
     }
 
     pub fn load(rom_bytes: &[u8]) -> Self {
-        Self::load_inner(rom_bytes, false)
-    }
-
-    pub fn load_headless(rom_bytes: &[u8]) -> Self {
-        Self::load_inner(rom_bytes, true)
-    }
-
-    fn load_inner(rom_bytes: &[u8], headless: bool) -> Self {
         let mut mem = [0; 0x10000];
         initialize_io_registers(&mut mem);
         let cartridge = Cartridge::new(rom_bytes);
@@ -98,7 +90,7 @@ impl Gameboy {
             cartridge.sync_visible_memory(&mut mem);
         }
 
-        let mut ppu = if headless { Ppu::new_headless() } else { Ppu::new() };
+        let mut ppu = Ppu::new_headless();
         ppu.sync_registers(&mut mem);
 
         Self {
@@ -123,28 +115,6 @@ impl Gameboy {
             joypad_directions: 0x0F,
             ppu_pending: 0,
         }
-    }
-
-    #[cfg(feature = "window")]
-    pub fn run(&mut self) -> Result<(), minifb::Error> {
-        let mut window = Window::new(
-            "gameboy-rs",
-            SCREEN_WIDTH,
-            SCREEN_HEIGHT,
-            WindowOptions {
-                scale: Scale::X4,
-                ..WindowOptions::default()
-            },
-        )?;
-        window.set_target_fps(120);
-
-        while window.is_open() && !window.is_key_down(Key::Escape) {
-            self.update_joypad(&window);
-            self.run_frame();
-            window.update_with_buffer(&self.ppu.framebuffer, SCREEN_WIDTH, SCREEN_HEIGHT)?;
-        }
-
-        Ok(())
     }
 
     pub fn run_frame(&mut self) {
@@ -899,39 +869,6 @@ impl Gameboy {
         let n = self.read_u16_addr(self.pc);
         self.pc = self.pc.wrapping_add(2);
         n
-    }
-
-    #[cfg(feature = "window")]
-    fn update_joypad(&mut self, window: &Window) {
-        let mut directions = 0x0F;
-        let mut buttons = 0x0F;
-
-        if window.is_key_down(Key::Right) || window.is_key_down(Key::D) {
-            directions &= !0x01;
-        }
-        if window.is_key_down(Key::Left) || window.is_key_down(Key::A) {
-            directions &= !0x02;
-        }
-        if window.is_key_down(Key::Up) || window.is_key_down(Key::W) {
-            directions &= !0x04;
-        }
-        if window.is_key_down(Key::Down) || window.is_key_down(Key::S) {
-            directions &= !0x08;
-        }
-        if window.is_key_down(Key::Z) || window.is_key_down(Key::J) {
-            buttons &= !0x01;
-        }
-        if window.is_key_down(Key::X) || window.is_key_down(Key::K) {
-            buttons &= !0x02;
-        }
-        if window.is_key_down(Key::Backspace) || window.is_key_down(Key::RightShift) {
-            buttons &= !0x04;
-        }
-        if window.is_key_down(Key::Enter) || window.is_key_down(Key::Space) {
-            buttons &= !0x08;
-        }
-
-        self.set_joypad_state(buttons, directions);
     }
 
     fn read_joypad(&self) -> u8 {
