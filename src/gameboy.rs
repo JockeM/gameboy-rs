@@ -579,8 +579,8 @@ impl Gameboy {
                 self.jump_if(self.read_flag(Flag::Carry), nn);
             }
             0xE0 => {
-                let address = 0xFF00 + u16::from(self.next_u8());
-                self.write_u8_addr(address, self.read_u8(Register8::A));
+                let offset = self.next_u8();
+                self.write_high_u8(offset, self.read_u8(Register8::A));
                 self.cycles += 8;
             }
             0xE1 => {
@@ -589,8 +589,7 @@ impl Gameboy {
                 self.cycles += 8;
             }
             0xE2 => {
-                let address = 0xFF00 + u16::from(self.read_u8(Register8::C));
-                self.write_u8_addr(address, self.read_u8(Register8::A));
+                self.write_high_u8(self.read_u8(Register8::C), self.read_u8(Register8::A));
                 self.cycles += 4;
             }
             0xE5 => {
@@ -627,8 +626,8 @@ impl Gameboy {
                 self.cycles += 4;
             }
             0xF0 => {
-                let address = 0xFF00 + u16::from(self.next_u8());
-                let value = self.read_u8_addr(address);
+                let offset = self.next_u8();
+                let value = self.read_high_u8(offset);
                 self.write_u8(Register8::A, value);
                 self.cycles += 8;
             }
@@ -638,8 +637,7 @@ impl Gameboy {
                 self.cycles += 8;
             }
             0xF2 => {
-                let address = 0xFF00 + u16::from(self.read_u8(Register8::C));
-                let value = self.read_u8_addr(address);
+                let value = self.read_high_u8(self.read_u8(Register8::C));
                 self.write_u8(Register8::A, value);
                 self.cycles += 4;
             }
@@ -691,15 +689,45 @@ impl Gameboy {
 }
 
 impl Gameboy {
+    #[inline(always)]
     pub fn read_u8_addr(&self, address: u16) -> u8 {
-        match address {
-            0xA000..=0xBFFF if self.cartridge.is_present() => self.cartridge.read_ram(address),
-            0xFF00 => self.read_joypad(),
-            _ => self.mem[address as usize],
+        let address_index = usize::from(address);
+
+        if address != 0xFF00 && !(0xA000..=0xBFFF).contains(&address) {
+            return self.mem[address_index];
+        }
+
+        if address == 0xFF00 {
+            self.read_joypad()
+        } else if self.cartridge.is_present() {
+            self.cartridge.read_ram(address)
+        } else {
+            self.mem[address_index]
         }
     }
 
+    #[inline(always)]
     pub fn write_u8_addr(&mut self, address: u16, value: u8) {
+        let address_index = usize::from(address);
+
+        match address {
+            0xC000..=0xDDFF => {
+                self.mem[address_index] = value;
+                self.mem[address_index + 0x2000] = value;
+                return;
+            }
+            0xE000..=0xFDFF => {
+                self.mem[address_index] = value;
+                self.mem[address_index - 0x2000] = value;
+                return;
+            }
+            0xFF80..=0xFFFF => {
+                self.mem[address_index] = value;
+                return;
+            }
+            _ => {}
+        }
+
         match address {
             0x0000..=0x7FFF if self.cartridge.is_present() => {
                 self.cartridge.write_rom(address, value);
@@ -708,14 +736,6 @@ impl Gameboy {
             0xA000..=0xBFFF if self.cartridge.is_present() => {
                 self.cartridge.write_ram(address, value);
                 self.cartridge.sync_external_ram(&mut self.mem);
-            }
-            0xC000..=0xDDFF => {
-                self.mem[address as usize] = value;
-                self.mem[usize::from(address + 0x2000)] = value;
-            }
-            0xE000..=0xFDFF => {
-                self.mem[address as usize] = value;
-                self.mem[usize::from(address - 0x2000)] = value;
             }
             0xFEA0..=0xFEFF => {}
             0xFF00 => {
@@ -759,7 +779,7 @@ impl Gameboy {
             0xFF4D => {
                 self.mem[KEY1_ADDR] = (self.mem[KEY1_ADDR] & 0x80) | (value & 0x01);
             }
-            _ => self.mem[address as usize] = value,
+            _ => self.mem[address_index] = value,
         }
     }
 
@@ -859,16 +879,43 @@ impl Gameboy {
         }
     }
 
+    #[inline(always)]
     fn next_u8(&mut self) -> u8 {
-        let n = self.read_u8_addr(self.pc);
-        self.pc = self.pc.wrapping_add(1);
-        n
+        let address = self.pc;
+        let value = if address != 0xFF00 && !(0xA000..=0xBFFF).contains(&address) {
+            self.mem[usize::from(address)]
+        } else {
+            self.read_u8_addr(address)
+        };
+        self.pc = address.wrapping_add(1);
+        value
     }
 
+    #[inline(always)]
     fn next_u16(&mut self) -> u16 {
-        let n = self.read_u16_addr(self.pc);
-        self.pc = self.pc.wrapping_add(2);
-        n
+        let lo = self.next_u8();
+        let hi = self.next_u8();
+        u16::from_le_bytes([lo, hi])
+    }
+
+    #[inline(always)]
+    fn read_high_u8(&self, offset: u8) -> u8 {
+        let address = 0xFF00 | u16::from(offset);
+        if offset == 0 {
+            self.read_joypad()
+        } else {
+            self.mem[usize::from(address)]
+        }
+    }
+
+    #[inline(always)]
+    fn write_high_u8(&mut self, offset: u8, value: u8) {
+        let address = 0xFF00 | u16::from(offset);
+        if offset >= 0x80 {
+            self.mem[usize::from(address)] = value;
+        } else {
+            self.write_u8_addr(address, value);
+        }
     }
 
     fn read_joypad(&self) -> u8 {
