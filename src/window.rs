@@ -10,6 +10,24 @@ const CPU_CLOCK_HZ: u64 = 4_194_304;
 const CYCLES_PER_FRAME: u64 = 70_224;
 const FRAME_DURATION: Duration =
     Duration::from_nanos(CYCLES_PER_FRAME * 1_000_000_000 / CPU_CLOCK_HZ);
+const KEY_BINDINGS: &[(Key, Input)] = &[
+    (Key::Right, Input::RIGHT),
+    (Key::D, Input::RIGHT),
+    (Key::Left, Input::LEFT),
+    (Key::A, Input::LEFT),
+    (Key::Up, Input::UP),
+    (Key::W, Input::UP),
+    (Key::Down, Input::DOWN),
+    (Key::S, Input::DOWN),
+    (Key::Z, Input::A),
+    (Key::J, Input::A),
+    (Key::X, Input::B),
+    (Key::K, Input::B),
+    (Key::Backspace, Input::SELECT),
+    (Key::RightShift, Input::SELECT),
+    (Key::Enter, Input::START),
+    (Key::Space, Input::START),
+];
 
 pub fn run(gameboy: &mut Gameboy) -> Result<(), minifb::Error> {
     gameboy.ppu.headless = false;
@@ -41,32 +59,10 @@ pub fn run(gameboy: &mut Gameboy) -> Result<(), minifb::Error> {
 }
 
 fn update_joypad(window: &Window, gameboy: &mut Gameboy) {
-    let mut input = Input::empty();
-
-    if window.is_key_down(Key::Right) || window.is_key_down(Key::D) {
-        input |= Input::RIGHT;
-    }
-    if window.is_key_down(Key::Left) || window.is_key_down(Key::A) {
-        input |= Input::LEFT;
-    }
-    if window.is_key_down(Key::Up) || window.is_key_down(Key::W) {
-        input |= Input::UP;
-    }
-    if window.is_key_down(Key::Down) || window.is_key_down(Key::S) {
-        input |= Input::DOWN;
-    }
-    if window.is_key_down(Key::Z) || window.is_key_down(Key::J) {
-        input |= Input::A;
-    }
-    if window.is_key_down(Key::X) || window.is_key_down(Key::K) {
-        input |= Input::B;
-    }
-    if window.is_key_down(Key::Backspace) || window.is_key_down(Key::RightShift) {
-        input |= Input::SELECT;
-    }
-    if window.is_key_down(Key::Enter) || window.is_key_down(Key::Space) {
-        input |= Input::START;
-    }
+    let input = KEY_BINDINGS
+        .iter()
+        .filter_map(|(key, input)| window.is_key_down(*key).then_some(*input))
+        .fold(Input::empty(), |input, pressed| input | pressed);
 
     gameboy.set_input(input);
 }

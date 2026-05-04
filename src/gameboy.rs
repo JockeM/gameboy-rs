@@ -1080,34 +1080,8 @@ impl Gameboy {
     }
 
     pub fn set_input(&mut self, input: Input) {
-        let mut buttons = 0x0F;
-        let mut directions = 0x0F;
-
-        if input.contains(Input::A) {
-            buttons &= !0x01;
-        }
-        if input.contains(Input::B) {
-            buttons &= !0x02;
-        }
-        if input.contains(Input::SELECT) {
-            buttons &= !0x04;
-        }
-        if input.contains(Input::START) {
-            buttons &= !0x08;
-        }
-        if input.contains(Input::RIGHT) {
-            directions &= !0x01;
-        }
-        if input.contains(Input::LEFT) {
-            directions &= !0x02;
-        }
-        if input.contains(Input::UP) {
-            directions &= !0x04;
-        }
-        if input.contains(Input::DOWN) {
-            directions &= !0x08;
-        }
-
+        let buttons = !input.bits & 0x0F;
+        let directions = !(input.bits >> 4) & 0x0F;
         self.set_joypad_state(buttons, directions);
     }
 
