@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::cartridge::Cartridge;
-use crate::ppu::Ppu;
+use crate::cartridge::{Cartridge, CartridgeSnapshot};
+use crate::ppu::{Ppu, PpuSnapshot};
 use crate::registers::*;
 
 use std::fs;
@@ -76,6 +76,46 @@ pub struct Gameboy {
     ppu_pending: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GameboySnapshot {
+    rom_fingerprint: u64,
+    af: u16,
+    bc: u16,
+    de: u16,
+    hl: u16,
+    sp: u16,
+    pc: u16,
+    mem: [u8; 0x10000],
+    cartridge: CartridgeSnapshot,
+    ppu: PpuSnapshot,
+    cycles: u64,
+    frames: u64,
+    halted: bool,
+    stopped: bool,
+    interrupts_enabled: bool,
+    serial_output: Vec<u8>,
+    timer_counter: u16,
+    tima_reload_delay: u8,
+    joypad_buttons: u8,
+    joypad_directions: u8,
+    ppu_pending: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotError {
+    RomMismatch,
+}
+
+impl std::fmt::Display for SnapshotError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SnapshotError::RomMismatch => write!(f, "snapshot was created from a different ROM"),
+        }
+    }
+}
+
+impl std::error::Error for SnapshotError {}
+
 impl Gameboy {
     pub fn load_file(path: impl AsRef<Path>) -> io::Result<Self> {
         let rom_bytes = fs::read(path)?;
@@ -115,6 +155,61 @@ impl Gameboy {
             joypad_directions: 0x0F,
             ppu_pending: 0,
         }
+    }
+
+    pub fn save_snapshot(&self) -> GameboySnapshot {
+        GameboySnapshot {
+            rom_fingerprint: self.cartridge.rom_fingerprint(),
+            af: self.af,
+            bc: self.bc,
+            de: self.de,
+            hl: self.hl,
+            sp: self.sp,
+            pc: self.pc,
+            mem: self.mem,
+            cartridge: self.cartridge.save_snapshot(),
+            ppu: self.ppu.save_snapshot(),
+            cycles: self.cycles,
+            frames: self.frames,
+            halted: self.halted,
+            stopped: self.stopped,
+            interrupts_enabled: self.interrupts_enabled,
+            serial_output: self.serial_output.clone(),
+            timer_counter: self.timer_counter,
+            tima_reload_delay: self.tima_reload_delay,
+            joypad_buttons: self.joypad_buttons,
+            joypad_directions: self.joypad_directions,
+            ppu_pending: self.ppu_pending,
+        }
+    }
+
+    pub fn load_snapshot(&mut self, snapshot: &GameboySnapshot) -> Result<(), SnapshotError> {
+        if self.cartridge.rom_fingerprint() != snapshot.rom_fingerprint {
+            return Err(SnapshotError::RomMismatch);
+        }
+
+        self.af = snapshot.af;
+        self.bc = snapshot.bc;
+        self.de = snapshot.de;
+        self.hl = snapshot.hl;
+        self.sp = snapshot.sp;
+        self.pc = snapshot.pc;
+        self.mem = snapshot.mem;
+        self.cartridge.load_snapshot(&snapshot.cartridge);
+        self.ppu.load_snapshot(&snapshot.ppu);
+        self.cycles = snapshot.cycles;
+        self.frames = snapshot.frames;
+        self.halted = snapshot.halted;
+        self.stopped = snapshot.stopped;
+        self.interrupts_enabled = snapshot.interrupts_enabled;
+        self.serial_output.clone_from(&snapshot.serial_output);
+        self.timer_counter = snapshot.timer_counter;
+        self.tima_reload_delay = snapshot.tima_reload_delay;
+        self.joypad_buttons = snapshot.joypad_buttons;
+        self.joypad_directions = snapshot.joypad_directions;
+        self.ppu_pending = snapshot.ppu_pending;
+
+        Ok(())
     }
 
     pub fn run_frame(&mut self) {
@@ -1490,5 +1585,68 @@ mod tests {
         gameboy.write_u8_addr(0xFF00, 0x10);
 
         assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x10, 0x10);
+    }
+
+    #[test]
+    fn snapshot_restore_returns_to_exact_saved_state() {
+        let mut rom = vec![0; 0x150];
+        rom[0x100] = 0x00;
+        rom[0x101] = 0x18;
+        rom[0x102] = 0xFD;
+
+        let mut gameboy = Gameboy::load(&rom);
+        gameboy.run_frame();
+        gameboy.set_joypad_state(0b1110, 0b1101);
+        let snapshot = gameboy.save_snapshot();
+
+        gameboy.mem[0xC000] = 0x42;
+        gameboy.af = 0x1230;
+        gameboy.run_frame();
+
+        gameboy.load_snapshot(&snapshot).expect("restore snapshot");
+
+        assert_eq!(gameboy.save_snapshot(), snapshot);
+    }
+
+    #[test]
+    fn loading_snapshot_from_different_rom_fails_without_mutating_state() {
+        let mut rom_a = vec![0; 0x150];
+        let mut rom_b = vec![0; 0x150];
+        rom_a[0x100] = 0x00;
+        rom_b[0x100] = 0x76;
+
+        let snapshot = Gameboy::load(&rom_a).save_snapshot();
+        let mut gameboy = Gameboy::load(&rom_b);
+        gameboy.run_frame();
+        let before = gameboy.save_snapshot();
+
+        assert_eq!(
+            gameboy.load_snapshot(&snapshot),
+            Err(SnapshotError::RomMismatch)
+        );
+        assert_eq!(gameboy.save_snapshot(), before);
+    }
+
+    #[test]
+    fn snapshot_preserves_mbc1_ram_and_mapper_state() {
+        let mut rom = vec![0; 0x10000];
+        rom[0x147] = 0x03;
+        rom[0x148] = 0x01;
+        rom[0x149] = 0x03;
+
+        let mut gameboy = Gameboy::load(&rom);
+        gameboy.write_u8_addr(0x0000, 0x0A);
+        gameboy.write_u8_addr(0x6000, 0x01);
+        gameboy.write_u8_addr(0x4000, 0x01);
+        gameboy.write_u8_addr(0xA000, 0x42);
+        let snapshot = gameboy.save_snapshot();
+
+        gameboy.write_u8_addr(0x4000, 0x00);
+        gameboy.write_u8_addr(0xA000, 0x99);
+
+        gameboy.load_snapshot(&snapshot).expect("restore snapshot");
+
+        assert_eq!(gameboy.read_u8_addr(0xA000), 0x42);
+        assert_eq!(gameboy.mem[0xA000], 0x42);
     }
 }

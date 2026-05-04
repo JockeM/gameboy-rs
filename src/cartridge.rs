@@ -6,6 +6,13 @@ pub(crate) struct Cartridge {
     ram_bank_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CartridgeSnapshot {
+    ram: Vec<u8>,
+    mapper: Mapper,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Mapper {
     NoMbc,
     Mbc1 {
@@ -50,6 +57,23 @@ impl Cartridge {
         }
     }
 
+    pub(crate) fn rom_fingerprint(&self) -> u64 {
+        self.rom.iter().fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        }) ^ self.rom.len() as u64
+    }
+
+    pub(crate) fn save_snapshot(&self) -> CartridgeSnapshot {
+        CartridgeSnapshot {
+            ram: self.ram.clone(),
+            mapper: self.mapper.clone(),
+        }
+    }
+
+    pub(crate) fn load_snapshot(&mut self, snapshot: &CartridgeSnapshot) {
+        self.ram.clone_from(&snapshot.ram);
+        self.mapper = snapshot.mapper.clone();
+    }
 
     pub(crate) fn write_rom(&mut self, address: u16, value: u8) {
         match &mut self.mapper {

@@ -45,6 +45,14 @@ pub struct Ppu {
     pub headless: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PpuSnapshot {
+    framebuffer: [u32; SCREEN_WIDTH * SCREEN_HEIGHT],
+    scanline_cycles: u16,
+    mode: u8,
+    headless: bool,
+}
+
 impl Ppu {
     pub fn new() -> Self {
         let mut ppu = Self {
@@ -64,6 +72,22 @@ impl Ppu {
             mode: MODE_OAM_SCAN,
             headless: true,
         }
+    }
+
+    pub(crate) fn save_snapshot(&self) -> PpuSnapshot {
+        PpuSnapshot {
+            framebuffer: self.framebuffer,
+            scanline_cycles: self.scanline_cycles,
+            mode: self.mode,
+            headless: self.headless,
+        }
+    }
+
+    pub(crate) fn load_snapshot(&mut self, snapshot: &PpuSnapshot) {
+        self.framebuffer = snapshot.framebuffer;
+        self.scanline_cycles = snapshot.scanline_cycles;
+        self.mode = snapshot.mode;
+        self.headless = snapshot.headless;
     }
 
     pub fn sync_registers(&mut self, memory: &mut [u8; 0x10000]) {
