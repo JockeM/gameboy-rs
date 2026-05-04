@@ -6,6 +6,7 @@ use crate::registers::*;
 
 use std::fs;
 use std::io::{self, Write};
+use std::ops::{BitOr, BitOrAssign};
 use std::path::Path;
 
 const CYCLES_PER_FRAME: u64 = 70_224;
@@ -115,6 +116,46 @@ impl std::fmt::Display for SnapshotError {
 }
 
 impl std::error::Error for SnapshotError {}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Input {
+    bits: u8,
+}
+
+impl Input {
+    pub const A: Self = Self { bits: 1 << 0 };
+    pub const B: Self = Self { bits: 1 << 1 };
+    pub const SELECT: Self = Self { bits: 1 << 2 };
+    pub const START: Self = Self { bits: 1 << 3 };
+    pub const RIGHT: Self = Self { bits: 1 << 4 };
+    pub const LEFT: Self = Self { bits: 1 << 5 };
+    pub const UP: Self = Self { bits: 1 << 6 };
+    pub const DOWN: Self = Self { bits: 1 << 7 };
+
+    pub const fn empty() -> Self {
+        Self { bits: 0 }
+    }
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.bits & other.bits == other.bits
+    }
+}
+
+impl BitOr for Input {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self {
+            bits: self.bits | rhs.bits,
+        }
+    }
+}
+
+impl BitOrAssign for Input {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.bits |= rhs.bits;
+    }
+}
 
 impl Gameboy {
     pub fn load_file(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -1038,6 +1079,38 @@ impl Gameboy {
         self.request_joypad_interrupt(previous, self.read_joypad());
     }
 
+    pub fn set_input(&mut self, input: Input) {
+        let mut buttons = 0x0F;
+        let mut directions = 0x0F;
+
+        if input.contains(Input::A) {
+            buttons &= !0x01;
+        }
+        if input.contains(Input::B) {
+            buttons &= !0x02;
+        }
+        if input.contains(Input::SELECT) {
+            buttons &= !0x04;
+        }
+        if input.contains(Input::START) {
+            buttons &= !0x08;
+        }
+        if input.contains(Input::RIGHT) {
+            directions &= !0x01;
+        }
+        if input.contains(Input::LEFT) {
+            directions &= !0x02;
+        }
+        if input.contains(Input::UP) {
+            directions &= !0x04;
+        }
+        if input.contains(Input::DOWN) {
+            directions &= !0x08;
+        }
+
+        self.set_joypad_state(buttons, directions);
+    }
+
     fn write_joypad_select(&mut self, value: u8) {
         let previous = self.read_joypad();
         self.mem[0xFF00] = (self.mem[0xFF00] & 0xCF) | (value & 0x30);
@@ -1583,6 +1656,49 @@ mod tests {
         gameboy.mem[INTERRUPT_FLAG_ADDR] = 0;
 
         gameboy.write_u8_addr(0xFF00, 0x10);
+
+        assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x10, 0x10);
+    }
+
+    #[test]
+    fn set_input_maps_buttons_to_joypad_state() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+
+        gameboy.set_input(Input::A | Input::B | Input::START);
+        gameboy.write_u8_addr(0xFF00, 0x10);
+
+        assert_eq!(gameboy.read_u8_addr(0xFF00) & 0x0F, 0b0100);
+    }
+
+    #[test]
+    fn set_input_maps_directions_to_joypad_state() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+
+        gameboy.set_input(Input::RIGHT | Input::LEFT | Input::UP);
+        gameboy.write_u8_addr(0xFF00, 0x20);
+
+        assert_eq!(gameboy.read_u8_addr(0xFF00) & 0x0F, 0b1000);
+    }
+
+    #[test]
+    fn set_input_supports_mixed_button_and_direction_inputs() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.set_input(Input::A | Input::RIGHT);
+
+        gameboy.write_u8_addr(0xFF00, 0x10);
+        assert_eq!(gameboy.read_u8_addr(0xFF00) & 0x0F, 0b1110);
+
+        gameboy.write_u8_addr(0xFF00, 0x20);
+        assert_eq!(gameboy.read_u8_addr(0xFF00) & 0x0F, 0b1110);
+    }
+
+    #[test]
+    fn set_input_requests_interrupt_for_new_button_press() {
+        let mut gameboy = Gameboy::load(&[0; 0x150]);
+        gameboy.write_u8_addr(0xFF00, 0x10);
+        gameboy.mem[INTERRUPT_FLAG_ADDR] = 0;
+
+        gameboy.set_input(Input::A);
 
         assert_eq!(gameboy.mem[INTERRUPT_FLAG_ADDR] & 0x10, 0x10);
     }

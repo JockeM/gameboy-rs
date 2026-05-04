@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use crate::Gameboy;
+use crate::{Gameboy, Input};
 
 use minifb::{Key, Scale, Window, WindowOptions};
 
@@ -41,33 +41,32 @@ pub fn run(gameboy: &mut Gameboy) -> Result<(), minifb::Error> {
 }
 
 fn update_joypad(window: &Window, gameboy: &mut Gameboy) {
-    let mut directions = 0x0F;
-    let mut buttons = 0x0F;
+    let mut input = Input::empty();
 
     if window.is_key_down(Key::Right) || window.is_key_down(Key::D) {
-        directions &= !0x01;
+        input |= Input::RIGHT;
     }
     if window.is_key_down(Key::Left) || window.is_key_down(Key::A) {
-        directions &= !0x02;
+        input |= Input::LEFT;
     }
     if window.is_key_down(Key::Up) || window.is_key_down(Key::W) {
-        directions &= !0x04;
+        input |= Input::UP;
     }
     if window.is_key_down(Key::Down) || window.is_key_down(Key::S) {
-        directions &= !0x08;
+        input |= Input::DOWN;
     }
     if window.is_key_down(Key::Z) || window.is_key_down(Key::J) {
-        buttons &= !0x01;
+        input |= Input::A;
     }
     if window.is_key_down(Key::X) || window.is_key_down(Key::K) {
-        buttons &= !0x02;
+        input |= Input::B;
     }
     if window.is_key_down(Key::Backspace) || window.is_key_down(Key::RightShift) {
-        buttons &= !0x04;
+        input |= Input::SELECT;
     }
     if window.is_key_down(Key::Enter) || window.is_key_down(Key::Space) {
-        buttons &= !0x08;
+        input |= Input::START;
     }
 
-    gameboy.set_joypad_state(buttons, directions);
+    gameboy.set_input(input);
 }

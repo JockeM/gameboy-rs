@@ -5,4 +5,4 @@ pub mod registers;
 #[cfg(feature = "window")]
 pub mod window;
 
-pub use gameboy::{Gameboy, GameboySnapshot, SnapshotError};
+pub use gameboy::{Gameboy, GameboySnapshot, Input, SnapshotError};
