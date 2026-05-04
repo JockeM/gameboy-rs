@@ -10,6 +10,17 @@ pub enum Flag {
     Carry,
 }
 
+impl Flag {
+    const fn mask(self) -> u8 {
+        match self {
+            Self::Zero => 0b1000_0000,
+            Self::Subtraction => 0b0100_0000,
+            Self::HalfCarry => 0b0010_0000,
+            Self::Carry => 0b0001_0000,
+        }
+    }
+}
+
 pub enum Register16 {
     AF,
     BC,
@@ -32,64 +43,29 @@ pub enum Register8 {
 
 impl Gameboy {
     fn write_flags(&mut self, zero: bool, subtraction: bool, half_carry: bool, carry: bool) {
-        let mut f = 0;
-        if zero {
-            f |= 0b1000_0000;
-        }
-        if subtraction {
-            f |= 0b0100_0000;
-        }
-        if half_carry {
-            f |= 0b0010_0000;
-        }
-        if carry {
-            f |= 0b0001_0000;
-        }
-        self.write_u8(Register8::F, f);
+        self.write_u8(
+            Register8::F,
+            (u8::from(zero) << 7)
+                | (u8::from(subtraction) << 6)
+                | (u8::from(half_carry) << 5)
+                | (u8::from(carry) << 4),
+        );
     }
 
     pub fn read_flag(&self, flag: Flag) -> bool {
-        let f = self.read_u8(Register8::F);
-        match flag {
-            Flag::Zero => f & 0b1000_0000 != 0,
-            Flag::Subtraction => f & 0b0100_0000 != 0,
-            Flag::HalfCarry => f & 0b0010_0000 != 0,
-            Flag::Carry => f & 0b0001_0000 != 0,
-        }
+        self.read_u8(Register8::F) & flag.mask() != 0
     }
 
     pub fn write_flag(&mut self, flag: Flag, value: bool) {
         let mut f = self.read_u8(Register8::F);
-        match flag {
-            Flag::Zero => {
-                if value {
-                    f |= 0b1000_0000;
-                } else {
-                    f &= 0b0111_1111;
-                }
-            }
-            Flag::Subtraction => {
-                if value {
-                    f |= 0b0100_0000;
-                } else {
-                    f &= 0b1011_1111;
-                }
-            }
-            Flag::HalfCarry => {
-                if value {
-                    f |= 0b0010_0000;
-                } else {
-                    f &= 0b1101_1111;
-                }
-            }
-            Flag::Carry => {
-                if value {
-                    f |= 0b0001_0000;
-                } else {
-                    f &= 0b1110_1111;
-                }
-            }
+        let mask = flag.mask();
+
+        if value {
+            f |= mask;
+        } else {
+            f &= !mask;
         }
+
         self.write_u8(Register8::F, f);
     }
 
