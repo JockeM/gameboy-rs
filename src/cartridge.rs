@@ -26,17 +26,13 @@ enum Mapper {
 impl Cartridge {
     pub(crate) fn new(rom_bytes: &[u8]) -> Self {
         let rom = rom_bytes.to_vec();
-        let rom_bank_count = (rom.len().max(0x4000) + 0x3FFF) / 0x4000;
+        let rom_bank_count = rom.len().max(0x4000).div_ceil(0x4000);
         let ram_size = rom_bytes
             .get(0x149)
             .copied()
             .map(cartridge_ram_size)
             .unwrap_or(0);
-        let ram_bank_count = if ram_size == 0 {
-            0
-        } else {
-            (ram_size + 0x1FFF) / 0x2000
-        };
+        let ram_bank_count = ram_size.div_ceil(0x2000);
         let mapper = match rom_bytes.get(0x147).copied().unwrap_or(0x00) {
             0x00 => Mapper::NoMbc,
             0x01..=0x03 => Mapper::Mbc1 {
