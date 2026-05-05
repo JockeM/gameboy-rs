@@ -66,3 +66,51 @@ fn mbc1_switches_the_bank_mapped_at_0x4000() {
     assert_eq!(gameboy.read_u8_addr(0x4000), 0x22);
     assert_eq!(gameboy.mem[0x4000], 0x22);
 }
+
+#[test]
+fn mbc5_switches_the_9_bit_bank_mapped_at_0x4000() {
+    let mut rom = vec![0; 0x4000 * 258];
+    rom[0x147] = 0x1B;
+    rom[0x148] = 0x08;
+    rom[0x149] = 0x03;
+    rom[0x4000] = 0x11;
+    rom[2 * 0x4000] = 0x22;
+    rom[257 * 0x4000] = 0x33;
+
+    let mut gameboy = Gameboy::load(&rom);
+
+    assert_eq!(gameboy.read_u8_addr(0x4000), 0x11);
+
+    gameboy.write_u8_addr(0x2000, 0x02);
+    assert_eq!(gameboy.read_u8_addr(0x4000), 0x22);
+
+    gameboy.write_u8_addr(0x2000, 0x01);
+    gameboy.write_u8_addr(0x3000, 0x01);
+
+    assert_eq!(gameboy.read_u8_addr(0x4000), 0x33);
+    assert_eq!(gameboy.mem[0x4000], 0x33);
+}
+
+#[test]
+fn mbc5_switches_external_ram_banks_when_ram_is_enabled() {
+    let mut rom = vec![0; 0x8000];
+    rom[0x147] = 0x1B;
+    rom[0x149] = 0x03;
+
+    let mut gameboy = Gameboy::load(&rom);
+
+    gameboy.write_u8_addr(0xA000, 0xEE);
+    assert_eq!(gameboy.read_u8_addr(0xA000), 0xFF);
+
+    gameboy.write_u8_addr(0x0000, 0x0A);
+    gameboy.write_u8_addr(0x4000, 0x02);
+    gameboy.write_u8_addr(0xA000, 0x42);
+
+    gameboy.write_u8_addr(0x4000, 0x00);
+    gameboy.write_u8_addr(0xA000, 0x99);
+
+    gameboy.write_u8_addr(0x4000, 0x02);
+
+    assert_eq!(gameboy.read_u8_addr(0xA000), 0x42);
+    assert_eq!(gameboy.mem[0xA000], 0x42);
+}

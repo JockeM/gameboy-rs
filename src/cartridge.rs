@@ -21,6 +21,11 @@ enum Mapper {
         bank_high2: u8,
         banking_mode: u8,
     },
+    Mbc5 {
+        ram_enabled: bool,
+        rom_bank: u16,
+        ram_bank: u8,
+    },
 }
 
 impl Cartridge {
@@ -40,6 +45,11 @@ impl Cartridge {
                 rom_bank_low5: 1,
                 bank_high2: 0,
                 banking_mode: 0,
+            },
+            0x19..=0x1B => Mapper::Mbc5 {
+                ram_enabled: false,
+                rom_bank: 1,
+                ram_bank: 0,
             },
             cartridge_type => panic!("Unsupported cartridge type: {cartridge_type:#04X}"),
         };
@@ -87,6 +97,20 @@ impl Cartridge {
                 }
                 0x4000..=0x5FFF => *bank_high2 = value & 0x03,
                 0x6000..=0x7FFF => *banking_mode = value & 0x01,
+                _ => unreachable!("invalid ROM write address {address:#06X}"),
+            },
+            Mapper::Mbc5 {
+                ram_enabled,
+                rom_bank,
+                ram_bank,
+            } => match address {
+                0x0000..=0x1FFF => *ram_enabled = value & 0x0F == 0x0A,
+                0x2000..=0x2FFF => *rom_bank = (*rom_bank & 0x100) | u16::from(value),
+                0x3000..=0x3FFF => {
+                    *rom_bank = (*rom_bank & 0x0FF) | (u16::from(value & 0x01) << 8);
+                }
+                0x4000..=0x5FFF => *ram_bank = value & 0x0F,
+                0x6000..=0x7FFF => {}
                 _ => unreachable!("invalid ROM write address {address:#06X}"),
             },
         }
@@ -150,6 +174,7 @@ impl Cartridge {
                 ..
             } if banking_mode != 0 => (usize::from(bank_high2) << 5) % self.rom_bank_count,
             Mapper::Mbc1 { .. } => 0,
+            Mapper::Mbc5 { .. } => 0,
         }
     }
 
@@ -175,6 +200,7 @@ impl Cartridge {
                     bank
                 }
             }
+            Mapper::Mbc5 { rom_bank, .. } => usize::from(rom_bank) % self.rom_bank_count,
         }
     }
 
@@ -189,6 +215,7 @@ impl Cartridge {
                 banking_mode,
                 ..
             } if banking_mode != 0 => usize::from(bank_high2) % self.ram_bank_count,
+            Mapper::Mbc5 { ram_bank, .. } => usize::from(ram_bank) % self.ram_bank_count,
             _ => 0,
         }
     }
@@ -200,6 +227,7 @@ impl Cartridge {
 
         match self.mapper {
             Mapper::Mbc1 { ram_enabled, .. } if !ram_enabled => None,
+            Mapper::Mbc5 { ram_enabled, .. } if !ram_enabled => None,
             _ => {
                 let offset = usize::from(address - 0xA000);
                 let index = self.current_ram_bank() * 0x2000 + offset;
