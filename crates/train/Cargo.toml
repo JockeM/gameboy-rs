@@ -2,3 +2,7 @@
 name = "train"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+agent.workspace = true
+env.workspace = true

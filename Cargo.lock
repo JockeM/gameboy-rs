@@ -539,6 +539,10 @@ dependencies = [
 [[package]]
 name = "train"
 version = "0.1.0"
+dependencies = [
+ "agent",
+ "env",
+]
 
 [[package]]
 name = "unicode-ident"
