@@ -26,6 +26,7 @@ mod tests {
                 frame: 0,
                 pixels: Vec::new(),
             },
+            state: None,
         };
 
         assert_eq!(agent.act(&observation), TetrisAction::Noop);

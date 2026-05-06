@@ -2,4 +2,7 @@ pub mod gameboy;
 pub mod tetris;
 
 pub use gameboy::{Action, EnvConfig, GameboyEnv, Observation, StepResult};
-pub use tetris::{TetrisAction, TetrisEnv, TetrisObservation, TetrisStep};
+pub use tetris::{
+    GameOverField, NumericEncoding, NumericField, TetrisAction, TetrisEnv, TetrisMemoryMap,
+    TetrisObservation, TetrisState, TetrisStep, BOARD_HEIGHT, BOARD_WIDTH,
+};
