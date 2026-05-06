@@ -1,0 +1,4 @@
+[package]
+name = "train"
+version.workspace = true
+edition.workspace = true

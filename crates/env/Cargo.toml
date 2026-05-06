@@ -1,0 +1,4 @@
+[package]
+name = "env"
+version.workspace = true
+edition.workspace = true

@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "agent"
+version = "0.1.0"
+
+[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -56,6 +60,10 @@ name = "downcast-rs"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
+
+[[package]]
+name = "env"
+version = "0.1.0"
 
 [[package]]
 name = "errno"
@@ -523,6 +531,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "train"
+version = "0.1.0"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -533,6 +545,10 @@ name = "version-compare"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "579a42fc0b8e0c63b76519a339be31bed574929511fa53c1a3acae26eb258f29"
+
+[[package]]
+name = "viewer"
+version = "0.1.0"
 
 [[package]]
 name = "wasm-bindgen"

@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/gameboy"]
+members = [
+    "crates/agent",
+    "crates/env",
+    "crates/gameboy",
+    "crates/train",
+    "crates/viewer",
+]
 resolver = "3"
 
 [workspace.package]
