@@ -2,3 +2,6 @@
 name = "env"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+gameboy-rs.workspace = true
