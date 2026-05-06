@@ -39,11 +39,24 @@ pub struct TetrisState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TetrisMemoryMap {
-    pub board_start: u16,
+    pub board: BoardMemoryMap,
     pub score: NumericField,
     pub lines: NumericField,
     pub level_addr: u16,
     pub game_over: GameOverField,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoardMemoryMap {
+    pub start: u16,
+    pub row_stride: usize,
+}
+
+impl BoardMemoryMap {
+    pub const GAME_BOY_TETRIS: Self = Self {
+        start: 0xC822,
+        row_stride: 0x20,
+    };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,8 +166,7 @@ impl TetrisState {
 
         for (y, row) in board.iter_mut().enumerate() {
             for (x, cell) in row.iter_mut().enumerate() {
-                let offset = y * BOARD_WIDTH + x;
-                *cell = read_byte(memory, usize::from(memory_map.board_start) + offset);
+                *cell = read_byte(memory, board_address(memory_map.board, y, x));
             }
         }
 
@@ -190,6 +202,10 @@ fn read_byte(memory: &[u8], address: usize) -> u8 {
     memory.get(address).copied().unwrap_or(0)
 }
 
+fn board_address(board: BoardMemoryMap, row: usize, col: usize) -> usize {
+    usize::from(board.start) + row * board.row_stride + col
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,7 +231,10 @@ mod tests {
     #[test]
     fn extracts_tetris_state_from_configured_memory_map() {
         let memory_map = TetrisMemoryMap {
-            board_start: 0xC000,
+            board: BoardMemoryMap {
+                start: 0xC000,
+                row_stride: 0x20,
+            },
             score: NumericField {
                 start: 0xC100,
                 len: 3,
@@ -244,7 +263,7 @@ mod tests {
         {
             let mem = &mut env.gameboy_mut().gameboy_mut().mem;
             mem[0xC000] = 7;
-            mem[0xC000 + BOARD_WIDTH + 1] = 8;
+            mem[0xC000 + 0x20 + 1] = 8;
             mem[0xC100] = 0x12;
             mem[0xC101] = 0x34;
             mem[0xC102] = 0x56;
@@ -265,6 +284,16 @@ mod tests {
         assert_eq!(state.level, 9);
         assert!(state.game_over);
         assert!(step.done);
+    }
+
+    #[test]
+    fn game_boy_tetris_board_map_matches_known_row_addresses() {
+        let board = BoardMemoryMap::GAME_BOY_TETRIS;
+
+        assert_eq!(board_address(board, 0, 0), 0xC822);
+        assert_eq!(board_address(board, 0, 9), 0xC82B);
+        assert_eq!(board_address(board, 1, 0), 0xC842);
+        assert_eq!(board_address(board, 16, 9), 0xCA2B);
     }
 
     #[test]
