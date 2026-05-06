@@ -2,3 +2,6 @@
 name = "agent"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+env.workspace = true

@@ -13,4 +13,5 @@ edition = "2024"
 version = "0.1.0"
 
 [workspace.dependencies]
+env = { path = "crates/env" }
 gameboy-rs = { path = "crates/gameboy", default-features = false }
