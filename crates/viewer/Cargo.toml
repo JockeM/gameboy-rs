@@ -2,3 +2,8 @@
 name = "viewer"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+env.workspace = true
+gameboy-rs.workspace = true
+minifb = "0.28.0"

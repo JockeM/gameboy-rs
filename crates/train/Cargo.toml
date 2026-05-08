@@ -5,4 +5,5 @@ edition.workspace = true
 
 [dependencies]
 agent.workspace = true
+burn.workspace = true
 env.workspace = true

@@ -1,5 +1,11 @@
 use agent::Agent;
-use env::{EnvConfig, TetrisEnv};
+use env::{EnvConfig, TetrisEnv, TetrisMemoryMap};
+
+pub mod dqn;
+pub mod dqn_agent;
+pub mod model;
+pub mod replay;
+pub mod rng;
 
 #[derive(Clone, Debug)]
 pub struct EpisodeConfig {
@@ -23,12 +29,9 @@ pub struct EpisodeSummary {
     pub done: bool,
 }
 
-pub fn run_episode(
-    rom: Vec<u8>,
-    agent: &mut impl Agent,
-    config: &EpisodeConfig,
-) -> EpisodeSummary {
-    let mut env = TetrisEnv::new(rom, config.env.clone());
+pub fn run_episode(rom: Vec<u8>, agent: &mut impl Agent, config: &EpisodeConfig) -> EpisodeSummary {
+    let mut env =
+        TetrisEnv::new_with_memory_map(rom, config.env.clone(), TetrisMemoryMap::GAME_BOY_TETRIS);
     let mut observation = env.reset();
     let mut total_reward = 0.0;
 

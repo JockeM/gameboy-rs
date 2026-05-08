@@ -14,5 +14,6 @@ version = "0.1.0"
 
 [workspace.dependencies]
 agent = { path = "crates/agent" }
+burn = { version = "0.21.0", default-features = false, features = ["std", "ndarray", "autodiff"] }
 env = { path = "crates/env" }
 gameboy-rs = { path = "crates/gameboy", default-features = false }
